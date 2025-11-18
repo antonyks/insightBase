@@ -1,0 +1,22 @@
+# Normalize line endings
+* text=auto eol=lf
+
+# Treat documentation files as text
+*.md text
+*.txt text
+
+# Treat binary files properly
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.ico binary
+
+# Merge strategies
+package-lock.json merge=union
+*.lock merge=union
+
+# Linguist overrides (for GitHub language stats)
+frontend/* linguist-language=JavaScript
+backend/* linguist-language=TypeScript

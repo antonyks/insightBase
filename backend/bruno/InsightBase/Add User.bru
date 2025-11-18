@@ -1,0 +1,24 @@
+meta {
+  name: Add User
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{host}}/api/users
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "name": "Jason",
+    "email": "Jason03@insightbase.com",
+    "password": "Jason123"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

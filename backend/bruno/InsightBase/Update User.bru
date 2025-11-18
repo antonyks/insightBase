@@ -1,0 +1,27 @@
+meta {
+  name: Update User
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{host}}/api/users/1
+  body: json
+  auth: inherit
+}
+
+headers {
+  authorization: {{token}}
+}
+
+body:json {
+  {
+    "name":"Admin User",
+    "email": "admin@example.com"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

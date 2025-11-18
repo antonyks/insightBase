@@ -1,0 +1,26 @@
+meta {
+  name: Get User List
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{host}}/api/users?name&skip=&take=
+  body: none
+  auth: inherit
+}
+
+params:query {
+  name: 
+  skip: 
+  take: 
+}
+
+headers {
+  authorization: {{token}}
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
