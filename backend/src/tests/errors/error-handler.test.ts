@@ -12,8 +12,6 @@ describe('errorHandler', () => {
     errorHandler(error, {} as any, mockRes, {} as any);
 
 
-    console.log(mockRes.json)
-
     expect(mockRes.status).toHaveBeenCalledWith(404);
     expect(mockRes.json).toHaveBeenCalledWith({
       message: 'Resource not found',
