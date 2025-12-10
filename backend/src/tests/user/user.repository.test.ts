@@ -62,7 +62,7 @@ describe('UserRepository', () => {
       const result = await UserRepository.findByEmail('test@example.com');
 
       expect(mockPrisma.user.findUnique).toHaveBeenCalledWith({
-        where: { email: 'test@example.com' },
+        where: { email: 'test@example.com', NOT:{status:UserStatus.DELETED} },
         select: expect.any(Object),
       });
 

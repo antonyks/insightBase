@@ -39,7 +39,7 @@ export const UserRepository = {
       } as Prisma.UserSelect;
     }
 
-    return UserModel.findUnique({ where: { email }, select: selection });
+    return UserModel.findUnique({ where: { email:email, NOT:{status:UserStatus.DELETED} }, select: selection });
   },
 
   async findById(id: number, includePassword: boolean = false): Promise<SelectedUser | null> {

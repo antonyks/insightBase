@@ -5,15 +5,15 @@ meta {
 }
 
 get {
-  url: {{host}}/api/users?name&skip=&take=
+  url: {{host}}/api/users?skip=0&take=10
   body: none
   auth: inherit
 }
 
 params:query {
-  name: 
-  skip: 
-  take: 
+  skip: 0
+  take: 10
+  ~name: 
 }
 
 headers {
