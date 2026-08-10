@@ -6,8 +6,10 @@ import { ENV } from './config/env';
 import { connectDatabase, prisma } from './config/database';
 import { logger } from './config/logger';
 import { JobService, PgBossJobQueueTransport } from './modules/job';
+import { createWorkerCpuTaskPool, WorkerCpuTaskPool } from './modules/worker';
 
 let boss: PgBoss | undefined;
+let cpuTaskPool: WorkerCpuTaskPool | undefined;
 let shutdownStarted = false;
 
 async function shutdown(signal: NodeJS.Signals) {
@@ -16,24 +18,45 @@ async function shutdown(signal: NodeJS.Signals) {
 
   logger.info({ signal }, 'Worker shutdown requested.');
 
+  let shutdownError: unknown;
+
   try {
     await boss?.stop({
       graceful: true,
       close: true,
       timeout: ENV.WORKER_SHUTDOWN_GRACE_MS,
     });
-    await prisma.$disconnect();
-    logger.info({ signal }, 'Worker stopped cleanly.');
-    process.exit(0);
   } catch (error: unknown) {
-    logger.error({ signal, err: error }, 'Worker shutdown failed.');
+    shutdownError = error;
+  }
+
+  try {
+    await closeCpuTaskPool();
+  } catch (error: unknown) {
+    shutdownError ??= error;
+  }
+
+  try {
+    await prisma.$disconnect();
+  } catch (error: unknown) {
+    shutdownError ??= error;
+  }
+
+  if (shutdownError) {
+    logger.error({ signal, err: shutdownError }, 'Worker shutdown failed.');
     process.exit(1);
   }
+
+  logger.info({ signal }, 'Worker stopped cleanly.');
+  process.exit(0);
 }
 
 async function startWorker() {
   try {
     await connectDatabase();
+    cpuTaskPool = createWorkerCpuTaskPool({
+      threadCount: ENV.PISCINA_THREAD_COUNT,
+    });
 
     boss = new PgBoss({
       connectionString: ENV.DATABASE_URL,
@@ -74,8 +97,22 @@ async function startWorker() {
       { err: error, pgBossSchema: ENV.PGBOSS_SCHEMA },
       'Worker failed to start.',
     );
+    await closeCpuTaskPool().catch(() => undefined);
     await prisma.$disconnect().catch(() => undefined);
     process.exit(1);
+  }
+}
+
+async function closeCpuTaskPool(): Promise<void> {
+  const pool = cpuTaskPool;
+  cpuTaskPool = undefined;
+  if (!pool) return;
+
+  try {
+    await pool.close();
+  } catch (error: unknown) {
+    await pool.destroy().catch(() => undefined);
+    throw error;
   }
 }
 
