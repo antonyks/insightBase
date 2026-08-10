@@ -372,6 +372,178 @@ describe('JobService', () => {
     });
   });
 
+  it('recovers stale running jobs by requeueing non-final attempts', async () => {
+    const staleRunning = createJob({
+      id: 41,
+      status: JobStatus.RUNNING,
+      stage: 'running',
+      attempts: 1,
+      maxAttempts: 3,
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      heartbeatAt: new Date('2026-01-01T00:01:00.000Z'),
+      queueMessageId: 'old-message',
+    });
+    const transport = new FakeQueueTransport('new-message');
+    mockPrisma.$queryRaw.mockResolvedValue([{ acquired: true }]);
+    mockPrisma.job.findMany.mockResolvedValue([staleRunning]);
+    mockPrisma.job.update.mockResolvedValue(createJob({
+      id: 41,
+      status: JobStatus.QUEUED,
+      stage: 'stale_requeued',
+      attempts: 1,
+      maxAttempts: 3,
+      queueMessageId: 'new-message',
+    }));
+
+    await expect(JobService.recoverStaleRunningJobs(
+      transport,
+      {
+        staleJobMs: 30_000,
+        now: new Date('2026-01-01T00:02:00.000Z'),
+      },
+    )).resolves.toEqual({ skipped: false, scanned: 1, requeued: 1, failed: 0 });
+
+    expect(mockPrisma.job.findMany).toHaveBeenCalledWith({
+      where: {
+        status: JobStatus.RUNNING,
+        OR: [
+          {
+            heartbeatAt: {
+              lt: new Date('2026-01-01T00:01:30.000Z'),
+            },
+          },
+          {
+            heartbeatAt: null,
+            startedAt: {
+              lt: new Date('2026-01-01T00:01:30.000Z'),
+            },
+          },
+        ],
+      },
+      orderBy: { startedAt: 'asc' },
+      take: 100,
+      select: expect.objectContaining({ id: true }),
+    });
+    expect(transport.sends).toEqual([
+      { queueName: 'validation.fixture', data: { jobId: 41 } },
+    ]);
+    expect(transport.sendOptions).toEqual([{ retryLimit: 2 }]);
+    expect(mockPrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 41 },
+      data: {
+        status: JobStatus.QUEUED,
+        stage: 'stale_requeued',
+        queueMessageId: 'new-message',
+      },
+      select: expect.objectContaining({ id: true }),
+    });
+  });
+
+  it('marks exhausted stale running jobs failed with sanitized stale worker error', async () => {
+    const staleExhausted = createJob({
+      id: 42,
+      status: JobStatus.RUNNING,
+      attempts: 2,
+      maxAttempts: 2,
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      heartbeatAt: new Date('2026-01-01T00:00:30.000Z'),
+    });
+    const transport = new FakeQueueTransport('unused');
+    mockPrisma.$queryRaw.mockResolvedValue([{ acquired: true }]);
+    mockPrisma.job.findMany.mockResolvedValue([staleExhausted]);
+    mockPrisma.job.update.mockResolvedValue(createJob({
+      id: 42,
+      status: JobStatus.FAILED,
+      stage: 'failed',
+      errorCode: 'JOB_WORKER_STALE',
+      sanitizedError: 'Job worker became stale.',
+    }));
+
+    await expect(JobService.recoverStaleRunningJobs(
+      transport,
+      {
+        staleJobMs: 30_000,
+        now: new Date('2026-01-01T00:02:00.000Z'),
+      },
+    )).resolves.toEqual({ skipped: false, scanned: 1, requeued: 0, failed: 1 });
+
+    expect(transport.sends).toEqual([]);
+    expect(mockPrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 42 },
+      data: expect.objectContaining({
+        status: JobStatus.FAILED,
+        stage: 'failed',
+        errorCode: 'JOB_WORKER_STALE',
+        sanitizedError: 'Job worker became stale.',
+        completedAt: new Date('2026-01-01T00:02:00.000Z'),
+      }),
+      select: expect.objectContaining({ id: true }),
+    });
+  });
+
+  it('marks stale requeue enqueue failures as visible failed jobs', async () => {
+    const staleRunning = createJob({
+      id: 43,
+      status: JobStatus.RUNNING,
+      attempts: 1,
+      maxAttempts: 3,
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    const transport = new FakeQueueTransport(new Error('queue secret failed'));
+    mockPrisma.$queryRaw.mockResolvedValue([{ acquired: true }]);
+    mockPrisma.job.findMany.mockResolvedValue([staleRunning]);
+    mockPrisma.job.update.mockResolvedValue(createJob({
+      id: 43,
+      status: JobStatus.FAILED,
+      stage: 'enqueue_failed',
+      errorCode: 'JOB_QUEUE_ENQUEUE_FAILED',
+      sanitizedError: 'Job queue enqueue failed.',
+    }));
+
+    await expect(JobService.recoverStaleRunningJobs(
+      transport,
+      {
+        staleJobMs: 30_000,
+        now: new Date('2026-01-01T00:02:00.000Z'),
+      },
+    )).resolves.toEqual({ skipped: false, scanned: 1, requeued: 0, failed: 1 });
+
+    expect(mockPrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 43 },
+      data: expect.objectContaining({
+        status: JobStatus.FAILED,
+        stage: 'enqueue_failed',
+        errorCode: 'JOB_QUEUE_ENQUEUE_FAILED',
+        sanitizedError: 'Job queue enqueue failed.',
+      }),
+      select: expect.objectContaining({ id: true }),
+    });
+    expect(JSON.stringify(mockPrisma.job.update.mock.calls)).not.toContain('secret');
+  });
+
+  it('skips stale running job recovery when another worker holds the lock', async () => {
+    mockPrisma.$queryRaw.mockResolvedValue([{ acquired: false }]);
+    const transport = new FakeQueueTransport('unused');
+
+    await expect(JobService.recoverStaleRunningJobs(
+      transport,
+      { staleJobMs: 30_000 },
+    )).resolves.toEqual({ skipped: true, scanned: 0, requeued: 0, failed: 0 });
+
+    expect(mockPrisma.job.findMany).not.toHaveBeenCalled();
+    expect(mockPrisma.job.update).not.toHaveBeenCalled();
+    expect(transport.sends).toEqual([]);
+  });
+
+  it('rejects invalid stale running job recovery input', async () => {
+    await expect(JobService.recoverStaleRunningJobs(
+      new FakeQueueTransport('unused'),
+      { staleJobMs: 0 },
+    )).rejects.toThrow(InvalidInputError);
+
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it('runs jobs once and treats repeated running calls as idempotent', async () => {
     const queued = createJob({ id: 11 });
     const running = createJob({

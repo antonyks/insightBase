@@ -14,6 +14,7 @@ import {
   JobQueueTransport,
   JobReconciliationResult,
   PublicJob,
+  StaleRunningJobRecoveryResult,
 } from './job.types';
 import { bestEffortNotifyJobChanged, JobNotificationHint } from './job.notifications';
 
@@ -21,6 +22,8 @@ const ENQUEUE_FAILED_ERROR_CODE = 'JOB_QUEUE_ENQUEUE_FAILED';
 const ENQUEUE_FAILED_ERROR_MESSAGE = 'Job queue enqueue failed.';
 const HANDLER_FAILED_ERROR_CODE = 'JOB_HANDLER_FAILED';
 const HANDLER_FAILED_ERROR_MESSAGE = 'Job handler failed.';
+const STALE_WORKER_ERROR_CODE = 'JOB_WORKER_STALE';
+const STALE_WORKER_ERROR_MESSAGE = 'Job worker became stale.';
 const DEFAULT_RECONCILIATION_LIMIT = 100;
 
 export const JobService = {
@@ -116,6 +119,84 @@ export const JobService = {
           queueMessageId,
         }, db);
         result.reenqueued += 1;
+      }
+
+      return result;
+    });
+  },
+
+  async recoverStaleRunningJobs(
+    queueTransport: JobQueueTransport,
+    options: { staleJobMs: number; limit?: number; now?: Date },
+  ): Promise<StaleRunningJobRecoveryResult> {
+    assertPositiveInteger(options.staleJobMs, 'staleJobMs');
+    const now = options.now ?? new Date();
+    const staleBefore = new Date(now.getTime() - options.staleJobMs);
+
+    return JobRepository.runWithStaleRunningJobRecoveryLock(async (lockAcquired, db) => {
+      if (!lockAcquired) {
+        return {
+          skipped: true,
+          scanned: 0,
+          requeued: 0,
+          failed: 0,
+        };
+      }
+
+      const staleJobs = await JobRepository.findStaleRunningJobs(
+        staleBefore,
+        options.limit ?? DEFAULT_RECONCILIATION_LIMIT,
+        db,
+      );
+      const result: StaleRunningJobRecoveryResult = {
+        skipped: false,
+        scanned: staleJobs.length,
+        requeued: 0,
+        failed: 0,
+      };
+
+      for (const job of staleJobs) {
+        if (job.attempts >= job.maxAttempts) {
+          await updateJobAndNotify(job.id, {
+            status: JobStatus.FAILED,
+            stage: 'failed',
+            errorCode: STALE_WORKER_ERROR_CODE,
+            sanitizedError: STALE_WORKER_ERROR_MESSAGE,
+            completedAt: job.completedAt ?? now,
+          }, 'failed', db);
+          result.failed += 1;
+          continue;
+        }
+
+        let queueMessageId: string | null;
+        try {
+          queueMessageId = await queueTransport.send(
+            job.type,
+            { jobId: job.id },
+            createJobQueueSendOptions(job.maxAttempts),
+          );
+
+          if (!queueMessageId) {
+            throw new Error('pg-boss did not return a message identifier.');
+          }
+        } catch {
+          await updateJobAndNotify(job.id, {
+            status: JobStatus.FAILED,
+            stage: 'enqueue_failed',
+            errorCode: ENQUEUE_FAILED_ERROR_CODE,
+            sanitizedError: ENQUEUE_FAILED_ERROR_MESSAGE,
+            completedAt: now,
+          }, 'enqueue_failed', db);
+          result.failed += 1;
+          continue;
+        }
+
+        await updateJobAndNotify(job.id, {
+          status: JobStatus.QUEUED,
+          stage: 'stale_requeued',
+          queueMessageId,
+        }, 'queued', db);
+        result.requeued += 1;
       }
 
       return result;
@@ -375,8 +456,9 @@ async function updateJobAndNotify(
   jobId: number,
   data: Prisma.JobUpdateInput,
   notificationHint: JobNotificationHint,
+  db?: Parameters<typeof JobRepository.updateJob>[2],
 ): Promise<SelectedJob> {
-  const job = await JobRepository.updateJob(jobId, data);
+  const job = await JobRepository.updateJob(jobId, data, db);
   await bestEffortNotifyJobChanged(job.id, notificationHint);
   return job;
 }
@@ -385,4 +467,10 @@ function createJobQueueSendOptions(maxAttempts: number): JobQueueSendOptions {
   return {
     retryLimit: Math.max(maxAttempts - 1, 0),
   };
+}
+
+function assertPositiveInteger(value: number, name: string): void {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new InvalidInputError(`${name} must be a positive integer.`, 'JOB_RECOVERY_INPUT_INVALID');
+  }
 }

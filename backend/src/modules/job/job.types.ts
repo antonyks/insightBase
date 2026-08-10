@@ -32,6 +32,13 @@ export interface JobReconciliationResult {
   failed: number;
 }
 
+export interface StaleRunningJobRecoveryResult {
+  skipped: boolean;
+  scanned: number;
+  requeued: number;
+  failed: number;
+}
+
 export interface PublicJob {
   id: number;
   workspaceId: number;

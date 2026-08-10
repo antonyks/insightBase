@@ -61,6 +61,34 @@ export const JobRepository = {
     });
   },
 
+  findStaleRunningJobs(
+    staleBefore: Date,
+    limit: number,
+    db: JobRepositoryClient = prisma,
+  ): Promise<SelectedJob[]> {
+    return db.job.findMany({
+      where: {
+        status: JobStatus.RUNNING,
+        OR: [
+          {
+            heartbeatAt: {
+              lt: staleBefore,
+            },
+          },
+          {
+            heartbeatAt: null,
+            startedAt: {
+              lt: staleBefore,
+            },
+          },
+        ],
+      },
+      orderBy: { startedAt: 'asc' },
+      take: limit,
+      select: JobSelectFields,
+    });
+  },
+
   updateJob(
     id: number,
     data: Prisma.JobUpdateInput,
@@ -79,6 +107,18 @@ export const JobRepository = {
     return prisma.$transaction(async (tx) => {
       const result = await tx.$queryRaw<Array<{ acquired: boolean }>>`
         SELECT pg_try_advisory_xact_lock(hashtextextended('silocore.job_queue_reconciliation', 0)) AS acquired
+      `;
+
+      return callback(result[0]?.acquired === true, tx);
+    });
+  },
+
+  runWithStaleRunningJobRecoveryLock<T>(
+    callback: (lockAcquired: boolean, db: JobRepositoryClient) => Promise<T>,
+  ): Promise<T> {
+    return prisma.$transaction(async (tx) => {
+      const result = await tx.$queryRaw<Array<{ acquired: boolean }>>`
+        SELECT pg_try_advisory_xact_lock(hashtextextended('silocore.stale_running_job_recovery', 0)) AS acquired
       `;
 
       return callback(result[0]?.acquired === true, tx);

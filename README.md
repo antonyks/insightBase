@@ -164,6 +164,7 @@ Backend variables live in `backend/.env`:
 | `PISCINA_THREAD_COUNT` | Reserved worker CPU pool size, default `1` |
 | `WORKER_SHUTDOWN_GRACE_MS` | Worker graceful shutdown timeout in milliseconds, default `30000` |
 | `WORKER_JOB_HEARTBEAT_INTERVAL_MS` | Worker application job heartbeat interval in milliseconds, default `10000` |
+| `WORKER_STALE_JOB_MS` | Running job stale recovery threshold in milliseconds, default `300000` |
 | `PGBOSS_SCHEMA` | PostgreSQL schema used by pg-boss, default `pgboss` |
 
 Frontend variables live in `frontend/.env`:

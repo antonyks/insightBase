@@ -6,6 +6,7 @@ import { ENV } from '../../../config/env';
 import {
   createJobWorkerHandler,
   ensurePgBossQueue,
+  JobService,
 } from '../../../modules/job';
 import {
   createValidationJobHandler,
@@ -14,6 +15,7 @@ import {
   VALIDATION_JOB_TYPE,
 } from '../../../modules/worker';
 import {
+  getJobQueueTransport,
   startJobQueueClient,
   stopJobQueueClient,
 } from '../../../modules/job/jobQueue.client';
@@ -221,6 +223,43 @@ afterEach(async () => {
 });
 
 describe('validation job integration', () => {
+  it('keeps validation jobs workspace-scoped across read, cancel and stream APIs', async () => {
+    const server = await startTestServer();
+
+    try {
+      const owner = await createAdminContext();
+      const other = await createAdminContext();
+      const response = await requestJson<{ data: { id: number } }>(
+        server,
+        '/api/admin/system/validation-jobs',
+        {
+          method: 'POST',
+          headers: owner.headers,
+          body: JSON.stringify({ mode: 'success' }),
+        },
+      );
+
+      expect(response.status).toBe(202);
+      await expect(requestJson(server, `/api/jobs/${response.body.data.id}`, {
+        method: 'GET',
+        headers: other.headers,
+      })).resolves.toMatchObject({ status: 404 });
+      await expect(requestJson(server, `/api/jobs/${response.body.data.id}/cancel`, {
+        method: 'POST',
+        headers: other.headers,
+      })).resolves.toMatchObject({ status: 404 });
+
+      const streamResponse = await fetch(`${server.baseUrl}/api/jobs/${response.body.data.id}/stream`, {
+        method: 'GET',
+        headers: other.headers,
+      });
+
+      expect(streamResponse.status).toBe(404);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('enqueues through the admin API and succeeds through pg-boss, worker pickup and Piscina', async () => {
     const server = await startTestServer();
     const worker = await startValidationWorker();
@@ -325,6 +364,21 @@ describe('validation job integration', () => {
       );
       expect(cancelResponse.status).toBe(200);
       expect(cancelResponse.body.data.status).toBe(JobStatus.CANCEL_REQUESTED);
+      await expect(requestJson<{ data: { status: JobStatus } }>(
+        server,
+        `/api/jobs/${response.body.data.id}/cancel`,
+        {
+          method: 'POST',
+          headers: admin.headers,
+        },
+      )).resolves.toMatchObject({
+        status: 200,
+        body: {
+          data: {
+            status: JobStatus.CANCEL_REQUESTED,
+          },
+        },
+      });
 
       worker = await startValidationWorker();
       const cancelledJob = await waitForJobStatus(response.body.data.id, [JobStatus.CANCELLED]);
@@ -338,6 +392,147 @@ describe('validation job integration', () => {
       await worker?.close();
       await server.close();
     }
+  });
+
+  it('streams a reconnect snapshot from durable in-progress job state', async () => {
+    const server = await startTestServer();
+
+    try {
+      const admin = await createAdminContext();
+      const job = await integrationPrisma.job.create({
+        data: {
+          workspaceId: admin.workspace.id,
+          createdByUserId: admin.user.id,
+          type: VALIDATION_JOB_TYPE,
+          payload: { mode: 'success' },
+          queueMessageId: 'in-progress-message-id',
+          status: JobStatus.RUNNING,
+          progress: 55,
+          stage: 'validation_checksum_complete',
+          attempts: 1,
+          startedAt: new Date(),
+          heartbeatAt: new Date(),
+        },
+      });
+      const abortController = new AbortController();
+      const response = await fetch(`${server.baseUrl}/api/jobs/${job.id}/stream`, {
+        method: 'GET',
+        headers: admin.headers,
+        signal: abortController.signal,
+      });
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('Expected SSE response body.');
+
+      try {
+        const snapshot = await readUntil(
+          reader,
+          (text) =>
+            text.includes('event: snapshot\n') &&
+            text.includes('"progress":55') &&
+            text.includes('"stage":"validation_checksum_complete"'),
+        );
+
+        expect(response.status).toBe(200);
+        expect(snapshot).not.toContain('in-progress-message-id');
+      } finally {
+        abortController.abort();
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('recovers a stale non-final running validation job by requeueing and completing it', async () => {
+    const worker = await startValidationWorker();
+
+    try {
+      const admin = await createAdminContext();
+      const staleHeartbeat = new Date('2026-01-01T00:00:00.000Z');
+      const job = await integrationPrisma.job.create({
+        data: {
+          workspaceId: admin.workspace.id,
+          createdByUserId: admin.user.id,
+          type: VALIDATION_JOB_TYPE,
+          payload: { mode: 'success' },
+          queueMessageId: 'stale-message-id',
+          status: JobStatus.RUNNING,
+          stage: 'running',
+          attempts: 1,
+          maxAttempts: 3,
+          startedAt: staleHeartbeat,
+          heartbeatAt: staleHeartbeat,
+        },
+      });
+
+      await expect(JobService.recoverStaleRunningJobs(
+        getJobQueueTransport(),
+        {
+          staleJobMs: 1000,
+          now: new Date('2026-01-01T00:01:00.000Z'),
+        },
+      )).resolves.toEqual({ skipped: false, scanned: 1, requeued: 1, failed: 0 });
+
+      const requeued = await integrationPrisma.job.findUniqueOrThrow({ where: { id: job.id } });
+      expect(requeued).toMatchObject({
+        status: JobStatus.QUEUED,
+        stage: 'stale_requeued',
+        attempts: 1,
+      });
+      expect(requeued.queueMessageId).not.toBe('stale-message-id');
+
+      const completed = await waitForJobStatus(job.id, [JobStatus.SUCCEEDED]);
+      expect(completed).toMatchObject({
+        status: JobStatus.SUCCEEDED,
+        attempts: 2,
+        result: {
+          mode: 'success',
+          checksum: EXPECTED_CHECKSUM,
+          iterations: 25000,
+          seedLength: 22,
+        },
+      });
+    } finally {
+      await worker.close();
+    }
+  });
+
+  it('marks exhausted stale running validation jobs failed with sanitized stale error', async () => {
+    const admin = await createAdminContext();
+    const staleHeartbeat = new Date('2026-01-01T00:00:00.000Z');
+    const job = await integrationPrisma.job.create({
+      data: {
+        workspaceId: admin.workspace.id,
+        createdByUserId: admin.user.id,
+        type: VALIDATION_JOB_TYPE,
+        payload: { mode: 'success' },
+        queueMessageId: 'exhausted-stale-message-id',
+        status: JobStatus.RUNNING,
+        stage: 'running',
+        attempts: 2,
+        maxAttempts: 2,
+        startedAt: staleHeartbeat,
+        heartbeatAt: staleHeartbeat,
+      },
+    });
+
+    await expect(JobService.recoverStaleRunningJobs(
+      getJobQueueTransport(),
+      {
+        staleJobMs: 1000,
+        now: new Date('2026-01-01T00:01:00.000Z'),
+      },
+    )).resolves.toEqual({ skipped: false, scanned: 1, requeued: 0, failed: 1 });
+
+    await expect(
+      integrationPrisma.job.findUniqueOrThrow({ where: { id: job.id } }),
+    ).resolves.toMatchObject({
+      status: JobStatus.FAILED,
+      stage: 'failed',
+      attempts: 2,
+      maxAttempts: 2,
+      errorCode: 'JOB_WORKER_STALE',
+      sanitizedError: 'Job worker became stale.',
+    });
   });
 
   it('reports validation job terminal state through existing SSE endpoint', async () => {
@@ -380,4 +575,97 @@ describe('validation job integration', () => {
       await server.close();
     }
   });
+
+  it('keeps terminal validation job states immutable across runtime operations', async () => {
+    const admin = await createAdminContext();
+    const now = new Date();
+    const succeeded = await integrationPrisma.job.create({
+      data: {
+        workspaceId: admin.workspace.id,
+        createdByUserId: admin.user.id,
+        type: VALIDATION_JOB_TYPE,
+        status: JobStatus.SUCCEEDED,
+        progress: 100,
+        stage: 'completed',
+        completedAt: now,
+      },
+    });
+    const failed = await integrationPrisma.job.create({
+      data: {
+        workspaceId: admin.workspace.id,
+        createdByUserId: admin.user.id,
+        type: VALIDATION_JOB_TYPE,
+        status: JobStatus.FAILED,
+        stage: 'failed',
+        errorCode: 'EXISTING_FAILURE',
+        sanitizedError: 'Existing failure.',
+        completedAt: now,
+      },
+    });
+    const cancelled = await integrationPrisma.job.create({
+      data: {
+        workspaceId: admin.workspace.id,
+        createdByUserId: admin.user.id,
+        type: VALIDATION_JOB_TYPE,
+        status: JobStatus.CANCELLED,
+        stage: 'cancelled',
+        completedAt: now,
+      },
+    });
+
+    await expect(JobService.requestCancellation(succeeded.id)).resolves.toMatchObject({
+      status: JobStatus.SUCCEEDED,
+    });
+    await expect(JobService.markSucceeded(failed.id, { ignored: true })).resolves.toMatchObject({
+      status: JobStatus.FAILED,
+      errorCode: 'EXISTING_FAILURE',
+    });
+    await expect(JobService.markFailed(cancelled.id, 'IGNORED', 'Ignored.')).resolves.toMatchObject({
+      status: JobStatus.CANCELLED,
+      sanitizedError: null,
+    });
+    await expect(JobService.recoverStaleRunningJobs(
+      getJobQueueTransport(),
+      {
+        staleJobMs: 1,
+        now: new Date('2026-01-01T00:01:00.000Z'),
+      },
+    )).resolves.toEqual({ skipped: false, scanned: 0, requeued: 0, failed: 0 });
+    await expect(JobService.reconcileQueuedJobsWithoutQueueMessage(
+      getJobQueueTransport(),
+    )).resolves.toEqual({ skipped: false, scanned: 0, reenqueued: 0, failed: 0 });
+
+    await expect(
+      integrationPrisma.job.findUniqueOrThrow({ where: { id: succeeded.id } }),
+    ).resolves.toMatchObject({ status: JobStatus.SUCCEEDED, stage: 'completed' });
+    await expect(
+      integrationPrisma.job.findUniqueOrThrow({ where: { id: failed.id } }),
+    ).resolves.toMatchObject({
+      status: JobStatus.FAILED,
+      errorCode: 'EXISTING_FAILURE',
+      sanitizedError: 'Existing failure.',
+    });
+    await expect(
+      integrationPrisma.job.findUniqueOrThrow({ where: { id: cancelled.id } }),
+    ).resolves.toMatchObject({ status: JobStatus.CANCELLED, stage: 'cancelled' });
+  });
 });
+
+async function readUntil(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  predicate: (text: string) => boolean,
+): Promise<string> {
+  const decoder = new TextDecoder();
+  let text = '';
+  const deadline = Date.now() + 5000;
+
+  while (Date.now() < deadline) {
+    const result = await reader.read();
+    if (result.done) break;
+
+    text += decoder.decode(result.value, { stream: true });
+    if (predicate(text)) return text;
+  }
+
+  throw new Error(`Timed out waiting for SSE text. Received: ${text}`);
+}

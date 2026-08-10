@@ -105,6 +105,11 @@ async function startWorker() {
       await JobService.reconcileQueuedJobsWithoutQueueMessage(
         new PgBossJobQueueTransport(boss),
       );
+    const staleRunningJobRecovery =
+      await JobService.recoverStaleRunningJobs(
+        new PgBossJobQueueTransport(boss),
+        { staleJobMs: ENV.WORKER_STALE_JOB_MS },
+      );
 
     logger.info(
       {
@@ -112,8 +117,10 @@ async function startWorker() {
         piscinaThreadCount: ENV.PISCINA_THREAD_COUNT,
         workerShutdownGraceMs: ENV.WORKER_SHUTDOWN_GRACE_MS,
         workerJobHeartbeatIntervalMs: ENV.WORKER_JOB_HEARTBEAT_INTERVAL_MS,
+        workerStaleJobMs: ENV.WORKER_STALE_JOB_MS,
         pgBossSchema: ENV.PGBOSS_SCHEMA,
         jobQueueReconciliation,
+        staleRunningJobRecovery,
       },
       'Worker started with job lifecycle execution infrastructure and validation job handler.',
     );
