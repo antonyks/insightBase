@@ -19,6 +19,10 @@ function positiveIntegerEnv(name: string, defaultValue: number): number {
   return value;
 }
 
+function positiveIntegerMsEnv(name: string, defaultValue: number): number {
+  return positiveIntegerEnv(name, defaultValue);
+}
+
 export const ENV = {
   NODE_ENV: process.env.NODE_ENV || 'development',
   PORT: Number(process.env.PORT) || 5000,
@@ -29,5 +33,7 @@ export const ENV = {
   OLLAMA_MODEL: ensureEnvVar('OLLAMA_MODEL'),
   WORKER_CONCURRENCY: positiveIntegerEnv('WORKER_CONCURRENCY', 1),
   PISCINA_THREAD_COUNT: positiveIntegerEnv('PISCINA_THREAD_COUNT', 1),
+  WORKER_SHUTDOWN_GRACE_MS: positiveIntegerMsEnv('WORKER_SHUTDOWN_GRACE_MS', 30_000),
+  WORKER_JOB_HEARTBEAT_INTERVAL_MS: positiveIntegerMsEnv('WORKER_JOB_HEARTBEAT_INTERVAL_MS', 10_000),
   PGBOSS_SCHEMA: process.env.PGBOSS_SCHEMA || 'pgboss',
 };

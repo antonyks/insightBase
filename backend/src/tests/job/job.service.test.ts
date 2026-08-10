@@ -6,14 +6,16 @@ import { mockPrisma } from '../setup';
 
 class FakeQueueTransport implements JobQueueTransport {
   public sends: Array<{ queueName: string; data: JobQueuePayload }> = [];
+  public sendOptions: unknown[] = [];
   private readonly responses: Array<string | null | Error>;
 
   constructor(...responses: Array<string | null | Error>) {
     this.responses = responses;
   }
 
-  async send(queueName: string, data: JobQueuePayload): Promise<string | null> {
+  async send(queueName: string, data: JobQueuePayload, options?: unknown): Promise<string | null> {
     this.sends.push({ queueName, data });
+    this.sendOptions.push(options);
     const response =
       this.responses.length > 0 ? this.responses.shift() : 'pgboss-message-id';
     if (response instanceof Error) throw response;
@@ -181,6 +183,7 @@ describe('JobService', () => {
     expect(transport.sends).toEqual([
       { queueName: 'provider.health.sample', data: { jobId: 77 } },
     ]);
+    expect(transport.sendOptions).toEqual([{ retryLimit: 1 }]);
     expect(mockPrisma.job.update).toHaveBeenCalledWith({
       where: { id: 77 },
       data: { queueMessageId: 'pgboss-77' },
@@ -210,6 +213,7 @@ describe('JobService', () => {
     expect(transport.sends).toEqual([
       { queueName: 'validation.fixture', data: { jobId: 78 } },
     ]);
+    expect(transport.sendOptions).toEqual([{ retryLimit: 0 }]);
     expect(mockPrisma.job.update).toHaveBeenCalledTimes(1);
     expect(mockPrisma.job.update).toHaveBeenCalledWith({
       where: { id: 78 },
@@ -302,6 +306,10 @@ describe('JobService', () => {
       { queueName: 'validation.one', data: { jobId: 1 } },
       { queueName: 'validation.two', data: { jobId: 2 } },
     ]);
+    expect(transport.sendOptions).toEqual([
+      { retryLimit: 0 },
+      { retryLimit: 0 },
+    ]);
   });
 
   it('skips reconciliation without querying jobs when another worker holds the lock', async () => {
@@ -387,6 +395,107 @@ describe('JobService', () => {
         attempts: { increment: 1 },
         startedAt: expect.any(Date),
         heartbeatAt: expect.any(Date),
+      }),
+      select: expect.objectContaining({ id: true }),
+    });
+  });
+
+  it('records worker attempts even when retrying from a running retry-pending job', async () => {
+    const retryPending = createJob({
+      id: 35,
+      status: JobStatus.RUNNING,
+      stage: 'retry_pending',
+      attempts: 1,
+      maxAttempts: 3,
+      startedAt: new Date(),
+    });
+    const secondAttempt = createJob({
+      id: 35,
+      status: JobStatus.RUNNING,
+      stage: 'running',
+      attempts: 2,
+      maxAttempts: 3,
+      startedAt: retryPending.startedAt,
+      heartbeatAt: new Date(),
+    });
+    mockPrisma.job.findUnique.mockResolvedValue(retryPending);
+    mockPrisma.job.update.mockResolvedValue(secondAttempt);
+
+    await expect(JobService.startWorkerAttempt(35)).resolves.toEqual(secondAttempt);
+
+    expect(mockPrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 35 },
+      data: expect.objectContaining({
+        status: JobStatus.RUNNING,
+        stage: 'running',
+        attempts: { increment: 1 },
+        startedAt: retryPending.startedAt,
+        heartbeatAt: expect.any(Date),
+      }),
+      select: expect.objectContaining({ id: true }),
+    });
+  });
+
+  it('keeps non-final worker failures visible as retry pending without raw error details', async () => {
+    const running = createJob({
+      id: 36,
+      status: JobStatus.RUNNING,
+      stage: 'running',
+      attempts: 1,
+      maxAttempts: 3,
+    });
+    const retryPending = createJob({
+      id: 36,
+      status: JobStatus.RUNNING,
+      stage: 'retry_pending',
+      attempts: 1,
+      maxAttempts: 3,
+    });
+    mockPrisma.job.findUnique.mockResolvedValue(running);
+    mockPrisma.job.update.mockResolvedValue(retryPending);
+
+    await expect(JobService.markRetryPending(36)).resolves.toEqual(retryPending);
+
+    expect(mockPrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 36 },
+      data: {
+        status: JobStatus.RUNNING,
+        stage: 'retry_pending',
+      },
+      select: expect.objectContaining({ id: true }),
+    });
+    expect(JSON.stringify(mockPrisma.job.update.mock.calls)).not.toContain('password');
+  });
+
+  it('marks exhausted worker handler failures with a sanitized stable error', async () => {
+    const running = createJob({
+      id: 37,
+      status: JobStatus.RUNNING,
+      stage: 'running',
+      attempts: 2,
+      maxAttempts: 2,
+    });
+    const failed = createJob({
+      id: 37,
+      status: JobStatus.FAILED,
+      stage: 'failed',
+      errorCode: 'JOB_HANDLER_FAILED',
+      sanitizedError: 'Job handler failed.',
+      completedAt: new Date(),
+    });
+    mockPrisma.job.findUnique.mockResolvedValue(running);
+    mockPrisma.job.update.mockResolvedValue(failed);
+
+    await expect(JobService.markHandlerFailed(37)).resolves.toEqual(failed);
+
+    expect(mockPrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 37 },
+      data: expect.objectContaining({
+        status: JobStatus.FAILED,
+        stage: 'failed',
+        errorCode: 'JOB_HANDLER_FAILED',
+        sanitizedError: 'Job handler failed.',
+        completedAt: expect.any(Date),
       }),
       select: expect.objectContaining({ id: true }),
     });

@@ -6,3 +6,4 @@ export * from './job.service';
 export * from './job.types';
 export * from './jobQueue.transport';
 export * from './job.notifications';
+export * from './job.worker';

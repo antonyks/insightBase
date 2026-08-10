@@ -162,6 +162,8 @@ Backend variables live in `backend/.env`:
 | `EMBEDDING_MODEL` | Reserved for embedding-related work |
 | `WORKER_CONCURRENCY` | Worker handler concurrency, default `1` |
 | `PISCINA_THREAD_COUNT` | Reserved worker CPU pool size, default `1` |
+| `WORKER_SHUTDOWN_GRACE_MS` | Worker graceful shutdown timeout in milliseconds, default `30000` |
+| `WORKER_JOB_HEARTBEAT_INTERVAL_MS` | Worker application job heartbeat interval in milliseconds, default `10000` |
 | `PGBOSS_SCHEMA` | PostgreSQL schema used by pg-boss, default `pgboss` |
 
 Frontend variables live in `frontend/.env`:

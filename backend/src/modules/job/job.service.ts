@@ -10,6 +10,7 @@ import { SelectedJob } from './job.model';
 import { assertJobDataIsSanitized } from './jobPrivacy';
 import {
   EnqueueJobInput,
+  JobQueueSendOptions,
   JobQueueTransport,
   JobReconciliationResult,
   PublicJob,
@@ -18,6 +19,8 @@ import { bestEffortNotifyJobChanged, JobNotificationHint } from './job.notificat
 
 const ENQUEUE_FAILED_ERROR_CODE = 'JOB_QUEUE_ENQUEUE_FAILED';
 const ENQUEUE_FAILED_ERROR_MESSAGE = 'Job queue enqueue failed.';
+const HANDLER_FAILED_ERROR_CODE = 'JOB_HANDLER_FAILED';
+const HANDLER_FAILED_ERROR_MESSAGE = 'Job handler failed.';
 const DEFAULT_RECONCILIATION_LIMIT = 100;
 
 export const JobService = {
@@ -30,6 +33,7 @@ export const JobService = {
     queueTransport: JobQueueTransport,
   ): Promise<SelectedJob> {
     const payload = input.payload ?? {};
+    const maxAttempts = input.maxAttempts ?? 1;
     assertJobDataIsSanitized(payload);
 
     const job = await JobRepository.createQueuedJob({
@@ -37,16 +41,18 @@ export const JobService = {
       createdByUserId: input.createdByUserId,
       type: input.type,
       payload,
-      maxAttempts: input.maxAttempts ?? 1,
+      maxAttempts,
       stage: input.stage ?? 'queued',
     });
     await bestEffortNotifyJobChanged(job.id, 'queued');
 
     let queueMessageId: string | null;
     try {
-      queueMessageId = await queueTransport.send(input.queueName ?? input.type, {
-        jobId: job.id,
-      });
+      queueMessageId = await queueTransport.send(
+        input.queueName ?? input.type,
+        { jobId: job.id },
+        createJobQueueSendOptions(maxAttempts),
+      );
 
       if (!queueMessageId) {
         throw new Error('pg-boss did not return a message identifier.');
@@ -90,7 +96,11 @@ export const JobService = {
       for (const job of queuedJobs) {
         let queueMessageId: string | null;
         try {
-          queueMessageId = await queueTransport.send(job.type, { jobId: job.id });
+          queueMessageId = await queueTransport.send(
+            job.type,
+            { jobId: job.id },
+            createJobQueueSendOptions(job.maxAttempts),
+          );
 
           if (!queueMessageId) {
             throw new Error('pg-boss did not return a message identifier.');
@@ -117,6 +127,29 @@ export const JobService = {
     if (job.status === JobStatus.RUNNING) return job;
 
     assertValidJobStatusTransition(job.status, JobStatus.RUNNING);
+    return updateJobAndNotify(job.id, {
+      status: JobStatus.RUNNING,
+      stage: 'running',
+      attempts: { increment: 1 },
+      startedAt: job.startedAt ?? new Date(),
+      heartbeatAt: new Date(),
+    }, 'running');
+  },
+
+  async startWorkerAttempt(jobId: number): Promise<SelectedJob> {
+    const job = await getExistingJob(jobId);
+    if (isTerminalJobStatus(job.status)) return job;
+    if (job.status === JobStatus.CANCEL_REQUESTED) {
+      return markCancelledAndNotify(job.id);
+    }
+
+    if (job.status !== JobStatus.QUEUED && job.status !== JobStatus.RUNNING) {
+      throw new InvalidInputError(
+        `Job cannot start a worker attempt from status ${job.status}.`,
+        'JOB_WORKER_ATTEMPT_STATUS_INVALID',
+      );
+    }
+
     return updateJobAndNotify(job.id, {
       status: JobStatus.RUNNING,
       stage: 'running',
@@ -190,6 +223,14 @@ export const JobService = {
     }, 'cancelled');
   },
 
+  async checkpointCancellation(jobId: number): Promise<SelectedJob> {
+    const job = await getExistingJob(jobId);
+    if (job.status === JobStatus.CANCEL_REQUESTED) {
+      return markCancelledAndNotify(job.id);
+    }
+    return job;
+  },
+
   async markSucceeded(
     jobId: number,
     result?: Prisma.InputJsonValue,
@@ -228,6 +269,27 @@ export const JobService = {
       sanitizedError,
       completedAt: job.completedAt ?? new Date(),
     }, 'failed');
+  },
+
+  async markRetryPending(jobId: number): Promise<SelectedJob> {
+    const job = await getExistingJob(jobId);
+    if (isTerminalJobStatus(job.status)) return job;
+
+    if (job.status !== JobStatus.RUNNING) {
+      throw new InvalidInputError(
+        'Job retry can only be pending after a running attempt.',
+        'JOB_RETRY_PENDING_STATUS_INVALID',
+      );
+    }
+
+    return updateJobAndNotify(job.id, {
+      status: JobStatus.RUNNING,
+      stage: 'retry_pending',
+    }, 'running');
+  },
+
+  async markHandlerFailed(jobId: number): Promise<SelectedJob> {
+    return this.markFailed(jobId, HANDLER_FAILED_ERROR_CODE, HANDLER_FAILED_ERROR_MESSAGE);
   },
 
   async heartbeat(jobId: number): Promise<SelectedJob> {
@@ -301,6 +363,14 @@ function markEnqueueFailed(
   }, db);
 }
 
+function markCancelledAndNotify(jobId: number): Promise<SelectedJob> {
+  return updateJobAndNotify(jobId, {
+    status: JobStatus.CANCELLED,
+    stage: 'cancelled',
+    completedAt: new Date(),
+  }, 'cancelled');
+}
+
 async function updateJobAndNotify(
   jobId: number,
   data: Prisma.JobUpdateInput,
@@ -309,4 +379,10 @@ async function updateJobAndNotify(
   const job = await JobRepository.updateJob(jobId, data);
   await bestEffortNotifyJobChanged(job.id, notificationHint);
   return job;
+}
+
+function createJobQueueSendOptions(maxAttempts: number): JobQueueSendOptions {
+  return {
+    retryLimit: Math.max(maxAttempts - 1, 0),
+  };
 }

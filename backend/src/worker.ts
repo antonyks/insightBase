@@ -17,7 +17,11 @@ async function shutdown(signal: NodeJS.Signals) {
   logger.info({ signal }, 'Worker shutdown requested.');
 
   try {
-    await boss?.stop({ graceful: true, close: true, timeout: 30_000 });
+    await boss?.stop({
+      graceful: true,
+      close: true,
+      timeout: ENV.WORKER_SHUTDOWN_GRACE_MS,
+    });
     await prisma.$disconnect();
     logger.info({ signal }, 'Worker stopped cleanly.');
     process.exit(0);
@@ -58,10 +62,12 @@ async function startWorker() {
       {
         workerConcurrency: ENV.WORKER_CONCURRENCY,
         piscinaThreadCount: ENV.PISCINA_THREAD_COUNT,
+        workerShutdownGraceMs: ENV.WORKER_SHUTDOWN_GRACE_MS,
+        workerJobHeartbeatIntervalMs: ENV.WORKER_JOB_HEARTBEAT_INTERVAL_MS,
         pgBossSchema: ENV.PGBOSS_SCHEMA,
         jobQueueReconciliation,
       },
-      'Worker started with no registered job handlers.',
+      'Worker started with job lifecycle execution infrastructure and no registered business handlers.',
     );
   } catch (error: unknown) {
     logger.error(
