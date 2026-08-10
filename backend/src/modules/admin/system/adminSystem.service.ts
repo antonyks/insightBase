@@ -2,6 +2,9 @@ import { logger } from '../../../config/logger';
 import { prisma } from '../../../config/database';
 import { LlmRuntimeService } from '../../llm/llmRuntime.service';
 import { UserRole, UserStatus } from '../../user/user.model';
+import { JobQueueTransport } from '../../job';
+import { getJobQueueTransport } from '../../job/jobQueue.client';
+import { enqueueValidationJob } from '../../worker/validationJob';
 import { AdminAnalyticsSummary, AdminSystemStatus } from './adminSystem.types';
 
 const OFFLINE_INFERENCE_STATUS: AdminSystemStatus['inference'] = {
@@ -83,5 +86,12 @@ export const AdminSystemService = {
         skipped: skippedProviders,
       },
     };
+  },
+
+  async enqueueValidationJob(
+    input: { workspaceId: number; createdByUserId: number; mode?: unknown },
+    queueTransport: JobQueueTransport = getJobQueueTransport(),
+  ) {
+    return enqueueValidationJob(input, queueTransport);
   },
 };

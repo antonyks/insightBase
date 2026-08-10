@@ -5,8 +5,18 @@ import { PgBoss } from 'pg-boss';
 import { ENV } from './config/env';
 import { connectDatabase, prisma } from './config/database';
 import { logger } from './config/logger';
-import { JobService, PgBossJobQueueTransport } from './modules/job';
-import { createWorkerCpuTaskPool, WorkerCpuTaskPool } from './modules/worker';
+import {
+  JobService,
+  PgBossJobQueueTransport,
+  createJobWorkerHandler,
+  ensurePgBossQueue,
+} from './modules/job';
+import {
+  createValidationJobHandler,
+  createWorkerCpuTaskPool,
+  VALIDATION_JOB_QUEUE,
+  WorkerCpuTaskPool,
+} from './modules/worker';
 
 let boss: PgBoss | undefined;
 let cpuTaskPool: WorkerCpuTaskPool | undefined;
@@ -76,6 +86,21 @@ async function startWorker() {
     });
 
     await boss.start();
+    await ensurePgBossQueue(boss, VALIDATION_JOB_QUEUE);
+    await boss.work(
+      VALIDATION_JOB_QUEUE,
+      {
+        includeMetadata: true,
+        localConcurrency: ENV.WORKER_CONCURRENCY,
+      },
+      createJobWorkerHandler(
+        createValidationJobHandler(cpuTaskPool),
+        {
+          boss,
+          heartbeatIntervalMs: ENV.WORKER_JOB_HEARTBEAT_INTERVAL_MS,
+        },
+      ),
+    );
     const jobQueueReconciliation =
       await JobService.reconcileQueuedJobsWithoutQueueMessage(
         new PgBossJobQueueTransport(boss),
@@ -90,7 +115,7 @@ async function startWorker() {
         pgBossSchema: ENV.PGBOSS_SCHEMA,
         jobQueueReconciliation,
       },
-      'Worker started with job lifecycle execution infrastructure and no registered business handlers.',
+      'Worker started with job lifecycle execution infrastructure and validation job handler.',
     );
   } catch (error: unknown) {
     logger.error(

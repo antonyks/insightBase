@@ -9,5 +9,6 @@ router.use(authenticate, authorizeRoles(UserRole.ADMIN));
 
 router.get('/analytics/summary', AdminSystemController.getAnalyticsSummary);
 router.get('/system/status', AdminSystemController.getSystemStatus);
+router.post('/system/validation-jobs', AdminSystemController.createValidationJob);
 
 export default router;

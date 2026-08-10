@@ -11,7 +11,7 @@
     "start:worker": "node dist/worker.js",
     "lint": "eslint src --ext .ts",
     "test": "jest --runInBand --detectOpenHandles",
-    "test:integration": "jest --config jest.integration.config.ts --runInBand --detectOpenHandles",
+    "test:integration": "NODE_OPTIONS=--experimental-vm-modules jest --config jest.integration.config.ts --runInBand --detectOpenHandles",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "pgboss:plans": "pg-boss plans migrate --schema ${PGBOSS_SCHEMA:-pgboss}",

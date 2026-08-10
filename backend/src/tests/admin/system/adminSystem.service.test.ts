@@ -16,6 +16,10 @@ jest.mock('../../../modules/llm/llmRuntime.service', () => ({
   },
 }));
 
+jest.mock('../../../modules/job/jobQueue.client', () => ({
+  getJobQueueTransport: jest.fn(),
+}));
+
 const providerCapabilities = {
   completion: false,
   streaming: false,
