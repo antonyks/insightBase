@@ -8,13 +8,22 @@ import {
 import { JobRepository } from './job.repository';
 import { SelectedJob } from './job.model';
 import { assertJobDataIsSanitized } from './jobPrivacy';
-import { EnqueueJobInput, JobQueueTransport, JobReconciliationResult } from './job.types';
+import {
+  EnqueueJobInput,
+  JobQueueTransport,
+  JobReconciliationResult,
+  PublicJob,
+} from './job.types';
 
 const ENQUEUE_FAILED_ERROR_CODE = 'JOB_QUEUE_ENQUEUE_FAILED';
 const ENQUEUE_FAILED_ERROR_MESSAGE = 'Job queue enqueue failed.';
 const DEFAULT_RECONCILIATION_LIMIT = 100;
 
 export const JobService = {
+  async getJobInWorkspace(jobId: number, workspaceId: number): Promise<PublicJob> {
+    return toPublicJob(await getExistingJobInWorkspace(jobId, workspaceId));
+  },
+
   async enqueueJob(
     input: EnqueueJobInput,
     queueTransport: JobQueueTransport,
@@ -147,6 +156,23 @@ export const JobService = {
     });
   },
 
+  async requestCancellationInWorkspace(
+    jobId: number,
+    workspaceId: number,
+  ): Promise<PublicJob> {
+    const job = await getExistingJobInWorkspace(jobId, workspaceId);
+    if (job.status === JobStatus.CANCEL_REQUESTED || isTerminalJobStatus(job.status)) {
+      return toPublicJob(job);
+    }
+
+    assertValidJobStatusTransition(job.status, JobStatus.CANCEL_REQUESTED);
+    return toPublicJob(await JobRepository.updateJob(job.id, {
+      status: JobStatus.CANCEL_REQUESTED,
+      stage: 'cancellation_requested',
+      cancelRequestedAt: job.cancelRequestedAt ?? new Date(),
+    }));
+  },
+
   async markCancelled(jobId: number): Promise<SelectedJob> {
     const job = await getExistingJob(jobId);
     if (job.status === JobStatus.CANCELLED || isTerminalJobStatus(job.status)) return job;
@@ -214,8 +240,42 @@ export const JobService = {
   },
 };
 
+export function toPublicJob(job: SelectedJob): PublicJob {
+  return {
+    id: job.id,
+    workspaceId: job.workspaceId,
+    type: job.type,
+    status: job.status,
+    progress: job.progress,
+    stage: job.stage,
+    result: job.result,
+    errorCode: job.errorCode,
+    sanitizedError: job.sanitizedError,
+    attempts: job.attempts,
+    maxAttempts: job.maxAttempts,
+    createdByUserId: job.createdByUserId,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
+    heartbeatAt: job.heartbeatAt,
+    cancelRequestedAt: job.cancelRequestedAt,
+  };
+}
+
 async function getExistingJob(jobId: number): Promise<SelectedJob> {
   const job = await JobRepository.findById(jobId);
+  if (!job) {
+    throw new NotFoundError('Job not found');
+  }
+
+  return job;
+}
+
+async function getExistingJobInWorkspace(
+  jobId: number,
+  workspaceId: number,
+): Promise<SelectedJob> {
+  const job = await JobRepository.findByIdInWorkspace(jobId, workspaceId);
   if (!job) {
     throw new NotFoundError('Job not found');
   }

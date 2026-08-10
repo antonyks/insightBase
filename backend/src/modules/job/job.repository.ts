@@ -36,6 +36,16 @@ export const JobRepository = {
     });
   },
 
+  findByIdInWorkspace(id: number, workspaceId: number): Promise<SelectedJob | null> {
+    return prisma.job.findFirst({
+      where: {
+        id,
+        workspaceId,
+      },
+      select: JobSelectFields,
+    });
+  },
+
   findQueuedJobsWithoutQueueMessage(
     limit: number,
     db: JobRepositoryClient = prisma,

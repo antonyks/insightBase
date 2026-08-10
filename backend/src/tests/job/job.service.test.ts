@@ -47,6 +47,100 @@ function createJob(overrides: Partial<SelectedJob> = {}): SelectedJob {
 }
 
 describe('JobService', () => {
+  it('reads jobs through the request workspace and returns a public DTO', async () => {
+    const job = createJob({
+      id: 31,
+      workspaceId: 10,
+      payload: { operationId: 'internal-payload' },
+      queueMessageId: 'pgboss-internal-id',
+      result: { processedCount: 2 },
+    });
+    mockPrisma.job.findFirst.mockResolvedValue(job);
+
+    const result = await JobService.getJobInWorkspace(31, 10);
+
+    expect(mockPrisma.job.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: 31,
+        workspaceId: 10,
+      },
+      select: expect.objectContaining({ id: true, workspaceId: true }),
+    });
+    expect(result).toMatchObject({
+      id: 31,
+      workspaceId: 10,
+      result: { processedCount: 2 },
+    });
+    expect(result).not.toHaveProperty('payload');
+    expect(result).not.toHaveProperty('queueMessageId');
+  });
+
+  it('throws not found when a job is missing from the request workspace', async () => {
+    mockPrisma.job.findFirst.mockResolvedValue(null);
+
+    await expect(JobService.getJobInWorkspace(31, 999)).rejects.toThrow(
+      new NotFoundError('Job not found'),
+    );
+  });
+
+  it('requests cancellation through a workspace-scoped job lookup', async () => {
+    const queued = createJob({ id: 32, workspaceId: 10 });
+    const cancelRequested = createJob({
+      id: 32,
+      workspaceId: 10,
+      status: JobStatus.CANCEL_REQUESTED,
+      stage: 'cancellation_requested',
+      cancelRequestedAt: new Date(),
+    });
+    mockPrisma.job.findFirst.mockResolvedValue(queued);
+    mockPrisma.job.update.mockResolvedValue(cancelRequested);
+
+    await expect(
+      JobService.requestCancellationInWorkspace(32, 10),
+    ).resolves.toMatchObject({
+      id: 32,
+      workspaceId: 10,
+      status: JobStatus.CANCEL_REQUESTED,
+    });
+
+    expect(mockPrisma.job.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: 32,
+        workspaceId: 10,
+      },
+      select: expect.objectContaining({ id: true, workspaceId: true }),
+    });
+    expect(mockPrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 32 },
+      data: expect.objectContaining({
+        status: JobStatus.CANCEL_REQUESTED,
+        stage: 'cancellation_requested',
+        cancelRequestedAt: expect.any(Date),
+      }),
+      select: expect.objectContaining({ id: true }),
+    });
+  });
+
+  it('returns terminal jobs unchanged for workspace-scoped cancellation', async () => {
+    const succeeded = createJob({
+      id: 33,
+      workspaceId: 10,
+      status: JobStatus.SUCCEEDED,
+      stage: 'completed',
+      completedAt: new Date(),
+    });
+    mockPrisma.job.findFirst.mockResolvedValue(succeeded);
+
+    await expect(
+      JobService.requestCancellationInWorkspace(33, 10),
+    ).resolves.toMatchObject({
+      status: JobStatus.SUCCEEDED,
+      stage: 'completed',
+    });
+
+    expect(mockPrisma.job.update).not.toHaveBeenCalled();
+  });
+
   it('creates an application job, enqueues a minimal pg-boss payload, and stores the message id', async () => {
     const queued = createJob({ id: 77, type: 'provider.health.sample' });
     const queuedWithMessage = createJob({

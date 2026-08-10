@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client';
+import { JobStatus } from './job.model';
 
 export type JobQueuePayload = {
   jobId: number;
@@ -30,3 +31,31 @@ export interface JobReconciliationResult {
   reenqueued: number;
   failed: number;
 }
+
+export interface PublicJob {
+  id: number;
+  workspaceId: number;
+  type: string;
+  status: JobStatus;
+  progress: number;
+  stage: string;
+  result: Prisma.JsonValue | null;
+  errorCode: string | null;
+  sanitizedError: string | null;
+  attempts: number;
+  maxAttempts: number;
+  createdByUserId: number;
+  createdAt: Date;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  heartbeatAt: Date | null;
+  cancelRequestedAt: Date | null;
+}
+
+export type JobSseEventType =
+  | 'snapshot'
+  | 'progress'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'heartbeat';
