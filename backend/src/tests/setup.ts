@@ -14,6 +14,7 @@ type jobResult = SelectedJob;
 
 const mockPrisma = {
   $queryRaw: jest.fn<() => Promise<unknown>>(),
+  $executeRaw: jest.fn<() => Promise<unknown>>(),
   $transaction: jest.fn(),
   user: {
     create: jest.fn<() => Promise<UserCreateResult>>(),
@@ -170,6 +171,7 @@ jest.mock('jsonwebtoken', () => ({
 
 beforeEach(() => {
     mockPrisma.$queryRaw.mockClear();
+    mockPrisma.$executeRaw.mockClear();
     mockPrisma.$transaction.mockClear();
     mockPrisma.user.create.mockClear();
     mockPrisma.user.findUnique.mockClear();

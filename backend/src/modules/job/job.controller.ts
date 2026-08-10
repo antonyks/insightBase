@@ -1,9 +1,10 @@
 import { Response } from 'express';
 import { JobStatus } from '@prisma/client';
-import { InvalidInputError } from '../../errors';
+import { InvalidInputError, NotFoundError } from '../../errors';
 import { AuthenticatedRequest } from '../../types/authenticatedRequest';
 import { JobService } from './job.service';
 import { JobSseEventType, PublicJob } from './job.types';
+import { jobNotificationListener } from './job.notifications';
 
 const JOB_SSE_POLL_INTERVAL_MS = 1000;
 const JOB_SSE_HEARTBEAT_INTERVAL_MS = 15000;
@@ -36,9 +37,26 @@ function getTerminalEvent(status: JobStatus): JobSseEventType | null {
   return null;
 }
 
-function delay(ms: number): Promise<void> {
+function waitForNotificationOrTimeout(
+  ms: number,
+  consumePendingNotification: () => boolean,
+  registerWake: (wake: (() => void) | null) => void,
+): Promise<'notification' | 'timeout'> {
+  if (consumePendingNotification()) {
+    return Promise.resolve('notification');
+  }
+
   return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+    const timeout = setTimeout(() => {
+      registerWake(null);
+      resolve('timeout');
+    }, ms);
+
+    registerWake(() => {
+      clearTimeout(timeout);
+      registerWake(null);
+      resolve('notification');
+    });
   });
 }
 
@@ -63,12 +81,23 @@ export const JobController = {
     let clientClosed = false;
     let lastSerializedJob = JSON.stringify(job);
     let lastEventAt = Date.now();
+    let pendingNotification = false;
+    let notificationWake: (() => void) | null = null;
+    const unsubscribe = jobNotificationListener.subscribe(jobId, () => {
+      if (notificationWake) {
+        notificationWake();
+        return;
+      }
+      pendingNotification = true;
+    });
 
     req.on?.('aborted', () => {
       clientClosed = true;
+      unsubscribe();
     });
     res.on?.('close', () => {
       clientClosed = true;
+      unsubscribe();
     });
 
     res.status(200);
@@ -89,10 +118,25 @@ export const JobController = {
       }
 
       while (!clientClosed && !res.writableEnded) {
-        await delay(JOB_SSE_POLL_INTERVAL_MS);
+        await waitForNotificationOrTimeout(
+          JOB_SSE_POLL_INTERVAL_MS,
+          () => {
+            if (!pendingNotification) return false;
+            pendingNotification = false;
+            return true;
+          },
+          (wake) => {
+            notificationWake = wake;
+          },
+        );
         if (clientClosed || res.writableEnded) break;
 
-        job = await JobService.getJobInWorkspace(jobId, workspaceId);
+        try {
+          job = await JobService.getJobInWorkspace(jobId, workspaceId);
+        } catch (error: unknown) {
+          if (error instanceof NotFoundError) break;
+          throw error;
+        }
         const serializedJob = JSON.stringify(job);
         const terminalEvent = getTerminalEvent(job.status);
 
@@ -114,6 +158,7 @@ export const JobController = {
         }
       }
     } finally {
+      unsubscribe();
       if (!res.writableEnded) {
         res.end();
       }

@@ -1,5 +1,6 @@
 import { JobStatus } from '@prisma/client';
 import { InvalidInputError, NotFoundError } from '../../errors';
+import { logger } from '../../config/logger';
 import { JobQueuePayload, JobQueueTransport, JobService, SelectedJob } from '../../modules/job';
 import { mockPrisma } from '../setup';
 
@@ -424,6 +425,42 @@ describe('JobService', () => {
     ).resolves.toEqual(succeeded);
 
     expect(mockPrisma.job.update).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps lifecycle transitions successful when notification publishing fails', async () => {
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const running = createJob({ id: 34, status: JobStatus.RUNNING, stage: 'running' });
+    const progressed = createJob({
+      id: 34,
+      status: JobStatus.RUNNING,
+      progress: 60,
+      stage: 'notified-progress',
+    });
+    mockPrisma.job.findUnique.mockResolvedValue(running);
+    mockPrisma.job.update.mockResolvedValue(progressed);
+    mockPrisma.$executeRaw.mockRejectedValueOnce(new Error('notification unavailable'));
+
+    await expect(
+      JobService.updateProgress(34, 60, 'notified-progress'),
+    ).resolves.toEqual(progressed);
+
+    expect(mockPrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 34 },
+      data: {
+        progress: 60,
+        stage: 'notified-progress',
+      },
+      select: expect.objectContaining({ id: true }),
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: 34,
+        event: 'progress',
+        operation: 'job.notify',
+      }),
+      'Job notification failed.',
+    );
+    warnSpy.mockRestore();
   });
 
   it('persists cancellation requests and cancellation finalization idempotently', async () => {

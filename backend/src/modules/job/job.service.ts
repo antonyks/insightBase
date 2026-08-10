@@ -14,6 +14,7 @@ import {
   JobReconciliationResult,
   PublicJob,
 } from './job.types';
+import { bestEffortNotifyJobChanged, JobNotificationHint } from './job.notifications';
 
 const ENQUEUE_FAILED_ERROR_CODE = 'JOB_QUEUE_ENQUEUE_FAILED';
 const ENQUEUE_FAILED_ERROR_MESSAGE = 'Job queue enqueue failed.';
@@ -39,6 +40,7 @@ export const JobService = {
       maxAttempts: input.maxAttempts ?? 1,
       stage: input.stage ?? 'queued',
     });
+    await bestEffortNotifyJobChanged(job.id, 'queued');
 
     let queueMessageId: string | null;
     try {
@@ -50,7 +52,9 @@ export const JobService = {
         throw new Error('pg-boss did not return a message identifier.');
       }
     } catch {
-      return markEnqueueFailed(job.id);
+      const failedJob = await markEnqueueFailed(job.id);
+      await bestEffortNotifyJobChanged(failedJob.id, 'enqueue_failed');
+      return failedJob;
     }
 
     return JobRepository.updateJob(job.id, {
@@ -92,7 +96,8 @@ export const JobService = {
             throw new Error('pg-boss did not return a message identifier.');
           }
         } catch {
-          await markEnqueueFailed(job.id, db);
+          const failedJob = await markEnqueueFailed(job.id, db);
+          await bestEffortNotifyJobChanged(failedJob.id, 'enqueue_failed');
           result.failed += 1;
           continue;
         }
@@ -112,13 +117,13 @@ export const JobService = {
     if (job.status === JobStatus.RUNNING) return job;
 
     assertValidJobStatusTransition(job.status, JobStatus.RUNNING);
-    return JobRepository.updateJob(job.id, {
+    return updateJobAndNotify(job.id, {
       status: JobStatus.RUNNING,
       stage: 'running',
       attempts: { increment: 1 },
       startedAt: job.startedAt ?? new Date(),
       heartbeatAt: new Date(),
-    });
+    }, 'running');
   },
 
   async updateProgress(
@@ -136,10 +141,10 @@ export const JobService = {
       );
     }
 
-    return JobRepository.updateJob(job.id, {
+    return updateJobAndNotify(job.id, {
       progress,
       ...(stage ? { stage } : {}),
-    });
+    }, 'progress');
   },
 
   async requestCancellation(jobId: number): Promise<SelectedJob> {
@@ -149,11 +154,11 @@ export const JobService = {
     }
 
     assertValidJobStatusTransition(job.status, JobStatus.CANCEL_REQUESTED);
-    return JobRepository.updateJob(job.id, {
+    return updateJobAndNotify(job.id, {
       status: JobStatus.CANCEL_REQUESTED,
       stage: 'cancellation_requested',
       cancelRequestedAt: job.cancelRequestedAt ?? new Date(),
-    });
+    }, 'cancellation_requested');
   },
 
   async requestCancellationInWorkspace(
@@ -166,11 +171,11 @@ export const JobService = {
     }
 
     assertValidJobStatusTransition(job.status, JobStatus.CANCEL_REQUESTED);
-    return toPublicJob(await JobRepository.updateJob(job.id, {
+    return toPublicJob(await updateJobAndNotify(job.id, {
       status: JobStatus.CANCEL_REQUESTED,
       stage: 'cancellation_requested',
       cancelRequestedAt: job.cancelRequestedAt ?? new Date(),
-    }));
+    }, 'cancellation_requested'));
   },
 
   async markCancelled(jobId: number): Promise<SelectedJob> {
@@ -178,11 +183,11 @@ export const JobService = {
     if (job.status === JobStatus.CANCELLED || isTerminalJobStatus(job.status)) return job;
 
     assertValidJobStatusTransition(job.status, JobStatus.CANCELLED);
-    return JobRepository.updateJob(job.id, {
+    return updateJobAndNotify(job.id, {
       status: JobStatus.CANCELLED,
       stage: 'cancelled',
       completedAt: job.completedAt ?? new Date(),
-    });
+    }, 'cancelled');
   },
 
   async markSucceeded(
@@ -198,13 +203,13 @@ export const JobService = {
     if (job.status === JobStatus.SUCCEEDED || isTerminalJobStatus(job.status)) return job;
 
     assertValidJobStatusTransition(job.status, JobStatus.SUCCEEDED);
-    return JobRepository.updateJob(job.id, {
+    return updateJobAndNotify(job.id, {
       status: JobStatus.SUCCEEDED,
       progress: 100,
       stage,
       ...(result !== undefined ? { result } : {}),
       completedAt: job.completedAt ?? new Date(),
-    });
+    }, 'succeeded');
   },
 
   async markFailed(
@@ -216,13 +221,13 @@ export const JobService = {
     if (job.status === JobStatus.FAILED || isTerminalJobStatus(job.status)) return job;
 
     assertValidJobStatusTransition(job.status, JobStatus.FAILED);
-    return JobRepository.updateJob(job.id, {
+    return updateJobAndNotify(job.id, {
       status: JobStatus.FAILED,
       stage: 'failed',
       errorCode,
       sanitizedError,
       completedAt: job.completedAt ?? new Date(),
-    });
+    }, 'failed');
   },
 
   async heartbeat(jobId: number): Promise<SelectedJob> {
@@ -234,9 +239,9 @@ export const JobService = {
       );
     }
 
-    return JobRepository.updateJob(job.id, {
+    return updateJobAndNotify(job.id, {
       heartbeatAt: new Date(),
-    });
+    }, 'heartbeat');
   },
 };
 
@@ -294,4 +299,14 @@ function markEnqueueFailed(
     sanitizedError: ENQUEUE_FAILED_ERROR_MESSAGE,
     completedAt: new Date(),
   }, db);
+}
+
+async function updateJobAndNotify(
+  jobId: number,
+  data: Prisma.JobUpdateInput,
+  notificationHint: JobNotificationHint,
+): Promise<SelectedJob> {
+  const job = await JobRepository.updateJob(jobId, data);
+  await bestEffortNotifyJobChanged(job.id, notificationHint);
+  return job;
 }

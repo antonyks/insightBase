@@ -2,6 +2,7 @@ import { JobStatus, WorkspaceStatus, WorkspaceType } from '@prisma/client';
 import { JobController } from '../../modules/job/job.controller';
 import { JobService } from '../../modules/job/job.service';
 import { PublicJob } from '../../modules/job/job.types';
+import { jobNotificationListener } from '../../modules/job/job.notifications';
 import { UserRole, UserStatus } from '../../modules/user/user.model';
 import { createAuthenticatedMockRequest, createMockResponse } from '../testUtils';
 
@@ -72,6 +73,7 @@ function createSseResponse() {
 describe('JobController', () => {
   beforeEach(() => {
     jest.restoreAllMocks();
+    jest.spyOn(jobNotificationListener, 'subscribe').mockReturnValue(jest.fn());
   });
 
   it('returns a workspace-scoped public job', async () => {
@@ -140,6 +142,46 @@ describe('JobController', () => {
     expect(writtenChunks).toContain('event: progress\n');
     expect(writtenChunks).toContain('event: succeeded\n');
     expect(res.end).toHaveBeenCalledTimes(1);
+    jest.useRealTimers();
+  });
+
+  it('wakes the stream from a job notification before the polling interval elapses', async () => {
+    jest.useFakeTimers();
+    let notificationSubscriber: (() => void) | undefined;
+    jest.spyOn(jobNotificationListener, 'subscribe').mockImplementation((_jobId, subscriber) => {
+      notificationSubscriber = () => subscriber({ jobId: 1, event: 'progress' });
+      return jest.fn();
+    });
+    const running = createJob({ status: JobStatus.RUNNING, stage: 'running' });
+    const progressing = createJob({
+      status: JobStatus.RUNNING,
+      stage: 'notified',
+      progress: 25,
+    });
+    const succeeded = createJob({
+      status: JobStatus.SUCCEEDED,
+      stage: 'completed',
+      progress: 100,
+      completedAt: new Date('2026-01-01T00:00:03.000Z'),
+    });
+    jest.spyOn(JobService, 'getJobInWorkspace')
+      .mockResolvedValueOnce(running)
+      .mockResolvedValueOnce(progressing)
+      .mockResolvedValueOnce(succeeded);
+    const req = createRequest();
+    const res = createSseResponse();
+
+    const streamPromise = JobController.streamJob(req, res as never);
+    await Promise.resolve();
+    notificationSubscriber?.();
+    await Promise.resolve();
+    notificationSubscriber?.();
+    await streamPromise;
+
+    const writtenChunks = res.write.mock.calls.map(([chunk]) => chunk);
+    expect(writtenChunks).toContain('event: progress\n');
+    expect(writtenChunks).toContain('event: succeeded\n');
+    expect(JobService.getJobInWorkspace).toHaveBeenCalledTimes(3);
     jest.useRealTimers();
   });
 
