@@ -57,6 +57,7 @@ const mockPrisma = {
   user: {
     create: jest.fn<() => Promise<UserCreateResult>>(),
     findUnique: jest.fn<() => Promise<SelectedUser | null>>(),
+    findFirst: jest.fn<() => Promise<SelectedUser | null>>(),
     findMany: jest.fn<() => Promise<SelectedUser[]>>(),
     update: jest.fn<() => Promise<SelectedUser>>(),
     count: jest.fn<() => Promise<number>>(),
@@ -260,6 +261,7 @@ beforeEach(() => {
     mockPrisma.$transaction.mockClear();
     mockPrisma.user.create.mockClear();
     mockPrisma.user.findUnique.mockClear();
+    mockPrisma.user.findFirst.mockClear();
     mockPrisma.user.findMany.mockClear();
     mockPrisma.user.update.mockClear();
     mockPrisma.user.count.mockClear();

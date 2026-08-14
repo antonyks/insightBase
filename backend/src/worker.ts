@@ -17,9 +17,16 @@ import {
   VALIDATION_JOB_QUEUE,
   WorkerCpuTaskPool,
 } from './modules/worker';
+import {
+  createProviderHealthSamplingJobHandler,
+  PROVIDER_HEALTH_SAMPLING_JOB_QUEUE,
+  ProviderHealthSamplingScheduler,
+  startProviderHealthSamplingScheduler,
+} from './modules/worker/providerHealthSamplingJob';
 
 let boss: PgBoss | undefined;
 let cpuTaskPool: WorkerCpuTaskPool | undefined;
+let providerHealthSamplingScheduler: ProviderHealthSamplingScheduler | undefined;
 let shutdownStarted = false;
 
 async function shutdown(signal: NodeJS.Signals) {
@@ -29,6 +36,9 @@ async function shutdown(signal: NodeJS.Signals) {
   logger.info({ signal }, 'Worker shutdown requested.');
 
   let shutdownError: unknown;
+
+  providerHealthSamplingScheduler?.stop();
+  providerHealthSamplingScheduler = undefined;
 
   try {
     await boss?.stop({
@@ -87,6 +97,7 @@ async function startWorker() {
 
     await boss.start();
     await ensurePgBossQueue(boss, VALIDATION_JOB_QUEUE);
+    await ensurePgBossQueue(boss, PROVIDER_HEALTH_SAMPLING_JOB_QUEUE);
     await boss.work(
       VALIDATION_JOB_QUEUE,
       {
@@ -101,13 +112,32 @@ async function startWorker() {
         },
       ),
     );
+    await boss.work(
+      PROVIDER_HEALTH_SAMPLING_JOB_QUEUE,
+      {
+        includeMetadata: true,
+        localConcurrency: ENV.WORKER_CONCURRENCY,
+      },
+      createJobWorkerHandler(
+        createProviderHealthSamplingJobHandler(),
+        {
+          boss,
+          heartbeatIntervalMs: ENV.WORKER_JOB_HEARTBEAT_INTERVAL_MS,
+        },
+      ),
+    );
+    const workerQueueTransport = new PgBossJobQueueTransport(boss);
+    providerHealthSamplingScheduler = startProviderHealthSamplingScheduler({
+      intervalMs: ENV.PROVIDER_HEALTH_SAMPLE_INTERVAL_MS,
+      queueTransport: workerQueueTransport,
+    });
     const jobQueueReconciliation =
       await JobService.reconcileQueuedJobsWithoutQueueMessage(
-        new PgBossJobQueueTransport(boss),
+        workerQueueTransport,
       );
     const staleRunningJobRecovery =
       await JobService.recoverStaleRunningJobs(
-        new PgBossJobQueueTransport(boss),
+        workerQueueTransport,
         { staleJobMs: ENV.WORKER_STALE_JOB_MS },
       );
 
@@ -118,17 +148,20 @@ async function startWorker() {
         workerShutdownGraceMs: ENV.WORKER_SHUTDOWN_GRACE_MS,
         workerJobHeartbeatIntervalMs: ENV.WORKER_JOB_HEARTBEAT_INTERVAL_MS,
         workerStaleJobMs: ENV.WORKER_STALE_JOB_MS,
+        providerHealthSampleIntervalMs: ENV.PROVIDER_HEALTH_SAMPLE_INTERVAL_MS,
         pgBossSchema: ENV.PGBOSS_SCHEMA,
         jobQueueReconciliation,
         staleRunningJobRecovery,
       },
-      'Worker started with job lifecycle execution infrastructure and validation job handler.',
+      'Worker started with job lifecycle execution infrastructure, validation job handler and provider health sampling handler.',
     );
   } catch (error: unknown) {
     logger.error(
       { err: error, pgBossSchema: ENV.PGBOSS_SCHEMA },
       'Worker failed to start.',
     );
+    providerHealthSamplingScheduler?.stop();
+    providerHealthSamplingScheduler = undefined;
     await closeCpuTaskPool().catch(() => undefined);
     await prisma.$disconnect().catch(() => undefined);
     process.exit(1);

@@ -275,8 +275,17 @@ describe('AdminSystemService', () => {
   });
 
   describe('getSystemStatus', () => {
+    function mockNoRecentProviderHealthSamples() {
+      mockPrisma.llmProviderConfig.findMany.mockResolvedValue([
+        { id: 1 },
+        { id: 2 },
+      ] as never);
+      mockPrisma.providerHealthSample.findMany.mockResolvedValue([]);
+    }
+
     it('returns online database and inference status when enabled providers exist', async () => {
       mockPrisma.$queryRaw.mockResolvedValue([{ '?column?': 1 }]);
+      mockNoRecentProviderHealthSamples();
       mockListAvailableModels.mockResolvedValue({
         models: [],
         providers: [
@@ -313,6 +322,43 @@ describe('AdminSystemService', () => {
       });
     });
 
+    it('uses recent provider health samples before live model registry checks', async () => {
+      mockPrisma.$queryRaw.mockResolvedValue([{ '?column?': 1 }]);
+      mockPrisma.llmProviderConfig.findMany.mockResolvedValue([
+        { id: 1 },
+        { id: 2 },
+        { id: 3 },
+      ] as never);
+      mockPrisma.providerHealthSample.findMany.mockResolvedValue([
+        {
+          providerId: 1,
+          status: ProviderHealthSampleStatus.SUCCESS,
+        },
+        {
+          providerId: 2,
+          status: ProviderHealthSampleStatus.ERROR,
+        },
+        {
+          providerId: 2,
+          status: ProviderHealthSampleStatus.SUCCESS,
+        },
+        {
+          providerId: 3,
+          status: ProviderHealthSampleStatus.SKIPPED,
+        },
+      ] as never);
+
+      const result = await AdminSystemService.getSystemStatus();
+
+      expect(result.inference).toEqual({
+        status: 'review',
+        providers: 3,
+        errors: 1,
+        skipped: 1,
+      });
+      expect(mockListAvailableModels).not.toHaveBeenCalled();
+    });
+
     it('returns database errors without throwing the status endpoint', async () => {
       mockPrisma.$queryRaw.mockRejectedValue(new Error('database unavailable'));
 
@@ -335,6 +381,7 @@ describe('AdminSystemService', () => {
 
     it('returns review inference status when providers report errors', async () => {
       mockPrisma.$queryRaw.mockResolvedValue([{ '?column?': 1 }]);
+      mockNoRecentProviderHealthSamples();
       mockListAvailableModels.mockResolvedValue({
         models: [],
         providers: [
@@ -370,6 +417,7 @@ describe('AdminSystemService', () => {
 
     it('returns offline inference status when no providers succeed', async () => {
       mockPrisma.$queryRaw.mockResolvedValue([{ '?column?': 1 }]);
+      mockNoRecentProviderHealthSamples();
       mockListAvailableModels.mockResolvedValue({
         models: [],
         providers: [

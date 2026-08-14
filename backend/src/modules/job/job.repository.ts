@@ -3,6 +3,11 @@ import { prisma } from '../../config/database';
 import { JobSelectFields, SelectedJob } from './job.model';
 
 type JobRepositoryClient = Pick<Prisma.TransactionClient, 'job' | 'jobMetric' | '$queryRaw'>;
+const TERMINAL_JOB_STATUSES = [
+  JobStatus.SUCCEEDED,
+  JobStatus.FAILED,
+  JobStatus.CANCELLED,
+];
 
 export interface CreateQueuedJobData {
   workspaceId: number;
@@ -89,6 +94,22 @@ export const JobRepository = {
     });
   },
 
+  findLatestNonTerminalJobByType(
+    type: string,
+    db: JobRepositoryClient = prisma,
+  ): Promise<SelectedJob | null> {
+    return db.job.findFirst({
+      where: {
+        type,
+        status: {
+          notIn: TERMINAL_JOB_STATUSES,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: JobSelectFields,
+    });
+  },
+
   updateJob(
     id: number,
     data: Prisma.JobUpdateInput,
@@ -119,6 +140,18 @@ export const JobRepository = {
     return prisma.$transaction(async (tx) => {
       const result = await tx.$queryRaw<Array<{ acquired: boolean }>>`
         SELECT pg_try_advisory_xact_lock(hashtextextended('silocore.stale_running_job_recovery', 0)) AS acquired
+      `;
+
+      return callback(result[0]?.acquired === true, tx);
+    });
+  },
+
+  runWithProviderHealthSamplingEnqueueLock<T>(
+    callback: (lockAcquired: boolean, db: JobRepositoryClient) => Promise<T>,
+  ): Promise<T> {
+    return prisma.$transaction(async (tx) => {
+      const result = await tx.$queryRaw<Array<{ acquired: boolean }>>`
+        SELECT pg_try_advisory_xact_lock(hashtextextended('silocore.provider_health_sampling_enqueue', 0)) AS acquired
       `;
 
       return callback(result[0]?.acquired === true, tx);

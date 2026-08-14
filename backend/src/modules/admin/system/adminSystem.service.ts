@@ -7,6 +7,7 @@ import {
 } from '@prisma/client';
 import { logger } from '../../../config/logger';
 import { prisma } from '../../../config/database';
+import { ENV } from '../../../config/env';
 import { LlmRuntimeService } from '../../llm/llmRuntime.service';
 import { UserRole, UserStatus } from '../../user/user.model';
 import { JobQueueTransport } from '../../job';
@@ -193,16 +194,8 @@ export const AdminSystemService = {
       };
     }
 
-    const modelRegistry = await LlmRuntimeService.listAvailableModels();
-    const providerStatuses = modelRegistry.providers;
-    const errorProviders = providerStatuses.filter((provider) => provider.status === 'error').length;
-    const skippedProviders = providerStatuses.filter((provider) => provider.status === 'skipped').length;
-    const successfulProviders = providerStatuses.filter((provider) => provider.status === 'success').length;
-    const inferenceStatus = errorProviders > 0
-      ? 'review'
-      : successfulProviders > 0
-        ? 'online'
-        : 'offline';
+    const recentInference = await getRecentProviderHealthInferenceStatus(ENV.PROVIDER_HEALTH_SAMPLE_RECENT_MS);
+    const inference = recentInference ?? await getLiveProviderInferenceStatus();
 
     return {
       backend: {
@@ -212,10 +205,10 @@ export const AdminSystemService = {
         status: 'online',
       },
       inference: {
-        status: inferenceStatus,
-        providers: providerStatuses.length,
-        errors: errorProviders,
-        skipped: skippedProviders,
+        status: inference.status,
+        providers: inference.providers,
+        errors: inference.errors,
+        skipped: inference.skipped,
       },
     };
   },
@@ -314,4 +307,83 @@ function rate(count: number, total: number): number {
 function nullableRounded(value: number | null | undefined): number | null {
   if (value === null || value === undefined) return null;
   return Math.round(value);
+}
+
+type InferenceStatusSummary = AdminSystemStatus['inference'];
+
+async function getRecentProviderHealthInferenceStatus(
+  recentMs: number,
+): Promise<InferenceStatusSummary | null> {
+  const activeProviders = await prisma.llmProviderConfig.findMany({
+    where: {
+      enabled: true,
+      deletedAt: null,
+    },
+    select: { id: true },
+  });
+
+  if (activeProviders.length === 0) {
+    return OFFLINE_INFERENCE_STATUS;
+  }
+
+  const activeProviderIds = activeProviders.map((provider) => provider.id);
+  const recentSamples = await prisma.providerHealthSample.findMany({
+    where: {
+      providerId: { in: activeProviderIds },
+      createdAt: {
+        gte: new Date(Date.now() - recentMs),
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+    select: {
+      providerId: true,
+      status: true,
+    },
+  });
+
+  const latestSamplesByProvider = new Map<number, ProviderHealthSampleStatus>();
+  for (const sample of recentSamples) {
+    if (!latestSamplesByProvider.has(sample.providerId)) {
+      latestSamplesByProvider.set(sample.providerId, sample.status);
+    }
+  }
+
+  if (latestSamplesByProvider.size === 0) {
+    return null;
+  }
+
+  const statuses = [...latestSamplesByProvider.values()];
+  const errors = statuses.filter((status) => status === ProviderHealthSampleStatus.ERROR).length;
+  const skipped = statuses.filter((status) => status === ProviderHealthSampleStatus.SKIPPED).length;
+  const successful = statuses.filter((status) => status === ProviderHealthSampleStatus.SUCCESS).length;
+
+  return {
+    status: errors > 0
+      ? 'review'
+      : successful > 0
+        ? 'online'
+        : 'offline',
+    providers: latestSamplesByProvider.size,
+    errors,
+    skipped,
+  };
+}
+
+async function getLiveProviderInferenceStatus(): Promise<InferenceStatusSummary> {
+  const modelRegistry = await LlmRuntimeService.listAvailableModels();
+  const providerStatuses = modelRegistry.providers;
+  const errorProviders = providerStatuses.filter((provider) => provider.status === 'error').length;
+  const skippedProviders = providerStatuses.filter((provider) => provider.status === 'skipped').length;
+  const successfulProviders = providerStatuses.filter((provider) => provider.status === 'success').length;
+
+  return {
+    status: errorProviders > 0
+      ? 'review'
+      : successfulProviders > 0
+        ? 'online'
+        : 'offline',
+    providers: providerStatuses.length,
+    errors: errorProviders,
+    skipped: skippedProviders,
+  };
 }
