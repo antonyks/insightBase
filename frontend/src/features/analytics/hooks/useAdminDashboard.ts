@@ -11,6 +11,8 @@ export const adminDashboardQueryKeys = {
   systemStatus: ["admin-dashboard", "system-status"] as const,
 };
 
+export const ADMIN_DASHBOARD_REFRESH_INTERVAL_MS = 60_000;
+
 export const useAdminDashboard = (summaryParams: AnalyticsSummaryParams = {}) => {
   const providersQuery = useQuery({
     queryKey: adminDashboardQueryKeys.providers,
@@ -30,11 +32,13 @@ export const useAdminDashboard = (summaryParams: AnalyticsSummaryParams = {}) =>
   const summaryQuery = useQuery({
     queryKey: adminDashboardQueryKeys.summary(summaryParams),
     queryFn: () => adminDashboardService.getAnalyticsSummary(summaryParams),
+    refetchInterval: ADMIN_DASHBOARD_REFRESH_INTERVAL_MS,
   });
 
   const systemStatusQuery = useQuery({
     queryKey: adminDashboardQueryKeys.systemStatus,
     queryFn: adminDashboardService.getSystemStatus,
+    refetchInterval: ADMIN_DASHBOARD_REFRESH_INTERVAL_MS,
   });
 
   return {
@@ -50,5 +54,6 @@ export const useAdminSystemStatus = () => {
   return useQuery({
     queryKey: adminDashboardQueryKeys.systemStatus,
     queryFn: adminDashboardService.getSystemStatus,
+    refetchInterval: ADMIN_DASHBOARD_REFRESH_INTERVAL_MS,
   });
 };

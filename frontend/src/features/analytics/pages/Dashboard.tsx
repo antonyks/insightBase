@@ -227,13 +227,15 @@ const Dashboard: React.FC = () => {
   const [toInput, setToInput] = useState("");
   const [appliedPeriod, setAppliedPeriod] = useState<{ from?: string; to?: string }>({});
   const summaryParams = useMemo(() => appliedPeriod, [appliedPeriod]);
-  const { providersQuery, modelsQuery, usersQuery, summaryQuery } = useAdminDashboard(summaryParams);
+  const { providersQuery, modelsQuery, usersQuery, summaryQuery, systemStatusQuery } =
+    useAdminDashboard(summaryParams);
 
   const providers = providersQuery.data;
   const modelRegistry = modelsQuery.data;
   const users = usersQuery.data;
   const metrics = buildMetrics(summaryQuery.data, modelRegistry, users);
   const summary = summaryQuery.data;
+  const isRefreshingOperationalData = summaryQuery.isFetching || systemStatusQuery.isFetching;
   const periodLabel = summary
     ? summary.period.from || summary.period.to
       ? `${summary.period.from ? new Date(summary.period.from).toLocaleString() : "Beginning"} to ${
@@ -254,6 +256,22 @@ const Dashboard: React.FC = () => {
             <p className="mt-1 text-xs text-slate-500">{periodLabel}</p>
           </div>
           <div className="flex flex-wrap items-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                void summaryQuery.refetch();
+                void systemStatusQuery.refetch();
+              }}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isRefreshingOperationalData}
+              aria-label="Refresh operational analytics"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${isRefreshingOperationalData ? "animate-spin" : ""}`}
+                aria-hidden="true"
+              />
+              Refresh
+            </button>
             <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
               From
               <input

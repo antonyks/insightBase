@@ -1,11 +1,12 @@
 import { http, HttpResponse } from 'msw';
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import Dashboard from '../../src/features/analytics/pages/Dashboard';
 import { API_BASE_URL } from '../../src/config/constants';
 import { renderWithProviders } from '../renderWithProviders';
 import { server } from '../msw/server';
+import { ADMIN_DASHBOARD_REFRESH_INTERVAL_MS } from '../../src/features/analytics/hooks/useAdminDashboard';
 
 const capabilities = {
   completion: true,
@@ -174,6 +175,10 @@ function registerDashboardHandlers(onSummaryRequest?: (url: URL) => void) {
 }
 
 describe('Dashboard analytics summary', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('renders operational aggregates and sends optional date-window params', async () => {
     const summaryRequests: URL[] = [];
     registerDashboardHandlers((url) => summaryRequests.push(url));
@@ -197,5 +202,51 @@ describe('Dashboard analytics summary', () => {
     expect(summaryRequests.some((url) => (
       url.searchParams.has('from') && url.searchParams.has('to')
     ))).toBe(true);
+  });
+
+  it('manually refreshes operational analytics', async () => {
+    const summaryRequests: URL[] = [];
+    registerDashboardHandlers((url) => summaryRequests.push(url));
+
+    renderWithProviders(<Dashboard />, {
+      initialEntries: ['/analytics/dashboard'],
+      routePath: '/analytics/dashboard',
+    });
+
+    expect(await screen.findByText('Generations')).toBeInTheDocument();
+
+    const refreshButton = screen.getByRole('button', {
+      name: 'Refresh operational analytics',
+    });
+    await waitFor(() => expect(refreshButton).toBeEnabled());
+
+    const initialRequestCount = summaryRequests.length;
+    await userEvent.click(refreshButton);
+
+    await waitFor(() => {
+      expect(summaryRequests.length).toBeGreaterThan(initialRequestCount);
+    });
+  });
+
+  it('auto-refreshes operational analytics on a conservative interval', async () => {
+    vi.useFakeTimers();
+    const summaryRequests: URL[] = [];
+    registerDashboardHandlers((url) => summaryRequests.push(url));
+
+    renderWithProviders(<Dashboard />, {
+      initialEntries: ['/analytics/dashboard'],
+      routePath: '/analytics/dashboard',
+    });
+
+    await vi.waitFor(() => {
+      expect(screen.getByText('80% success, 0% aborted')).toBeInTheDocument();
+    });
+    const initialRequestCount = summaryRequests.length;
+
+    await vi.advanceTimersByTimeAsync(ADMIN_DASHBOARD_REFRESH_INTERVAL_MS);
+
+    await vi.waitFor(() => {
+      expect(summaryRequests.length).toBeGreaterThan(initialRequestCount);
+    });
   });
 });
