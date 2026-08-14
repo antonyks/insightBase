@@ -4,6 +4,7 @@ import { logger } from '../../../config/logger';
 import { NotFoundError } from '../../../errors';
 import { ChatService } from '../../../modules/chat/chat.service';
 import { IChatWorkspaceContext } from '../../../modules/chat/chat.types';
+import { GenerationUsageOutcome, GenerationUsageTokenCountSource } from '../../../modules/generationUsage';
 import { WorkspaceService } from '../../../modules/workspace/workspace.service';
 import { WorkspaceProvisioningService } from '../../../modules/workspace/workspaceProvisioning.service';
 import {
@@ -134,6 +135,24 @@ async function getSessionMessages(sessionId: number) {
   });
 }
 
+async function getGenerationUsageRows() {
+  return integrationPrisma.$queryRaw<Array<{
+    id: number;
+    workspaceId: number;
+    providerId: number;
+    model: string;
+    streaming: boolean;
+    latencyMs: number | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    totalTokens: number | null;
+    tokenCountSource: string;
+    outcome: string;
+    errorCode: string | null;
+    createdAt: Date;
+  }>>`SELECT * FROM "generation_usages" ORDER BY "id" ASC`;
+}
+
 async function closeUpstream(upstream: MockLlmUpstream): Promise<void> {
   await upstream.close();
 }
@@ -216,6 +235,20 @@ describe('Chat generation PostgreSQL integration', () => {
         reasoning: ASSISTANT_REASONING,
         finishReason: 'stop',
       }));
+      const usageRows = await getGenerationUsageRows();
+      expect(usageRows).toHaveLength(1);
+      expect(usageRows[0]).toMatchObject({
+        workspaceId: workspace.id,
+        providerId: provider.id,
+        model: MODEL_ID,
+        streaming: false,
+        inputTokens: 5,
+        outputTokens: 7,
+        totalTokens: 12,
+        tokenCountSource: GenerationUsageTokenCountSource.PROVIDER_REPORTED,
+        outcome: GenerationUsageOutcome.SUCCEEDED,
+        errorCode: null,
+      });
 
       expect(upstream.requests).toHaveLength(1);
       expect(upstream.requests[0].headers).toMatchObject({
@@ -236,6 +269,12 @@ describe('Chat generation PostgreSQL integration', () => {
       });
       expectNoSecrets(result);
       expectNoSecrets(messages[2].metadata);
+      expectNoSecrets(usageRows);
+      expect(JSON.stringify(usageRows)).not.toContain(USER_PROMPT);
+      expect(JSON.stringify(usageRows)).not.toContain(PRIOR_PROMPT);
+      expect(JSON.stringify(usageRows)).not.toContain(ASSISTANT_CONTENT);
+      expect(JSON.stringify(usageRows)).not.toContain(ASSISTANT_REASONING);
+      expect(JSON.stringify(usageRows)).not.toContain('END');
       expect(loggedPayloadText()).not.toContain(SECRET_API_KEY);
       expect(loggedPayloadText()).not.toContain(SECRET_HEADER_VALUE);
       expect(loggedPayloadText()).not.toContain(USER_PROMPT);
@@ -299,6 +338,20 @@ describe('Chat generation PostgreSQL integration', () => {
           params: {},
         }),
       });
+      const usageRows = await getGenerationUsageRows();
+      expect(usageRows).toHaveLength(1);
+      expect(usageRows[0]).toMatchObject({
+        workspaceId: workspace.id,
+        providerId: provider.id,
+        model: MODEL_ID,
+        streaming: true,
+        inputTokens: 9,
+        outputTokens: 10,
+        totalTokens: 19,
+        tokenCountSource: GenerationUsageTokenCountSource.PROVIDER_REPORTED,
+        outcome: GenerationUsageOutcome.SUCCEEDED,
+        errorCode: null,
+      });
       expect(upstream.requests).toHaveLength(1);
       expect(JSON.parse(upstream.requests[0].body)).toMatchObject({
         model: MODEL_ID,
@@ -306,6 +359,10 @@ describe('Chat generation PostgreSQL integration', () => {
         stream: true,
       });
       expectNoSecrets(messages[1].metadata);
+      expectNoSecrets(usageRows);
+      expect(JSON.stringify(usageRows)).not.toContain(USER_PROMPT);
+      expect(JSON.stringify(usageRows)).not.toContain(STREAM_CONTENT);
+      expect(JSON.stringify(usageRows)).not.toContain(STREAM_REASONING);
       expect(loggedPayloadText()).not.toContain(SECRET_API_KEY);
       expect(loggedPayloadText()).not.toContain(SECRET_HEADER_VALUE);
       expect(loggedPayloadText()).not.toContain(USER_PROMPT);
@@ -367,8 +424,25 @@ describe('Chat generation PostgreSQL integration', () => {
           errorMessage: expect.any(String),
         }),
       });
+      const usageRows = await getGenerationUsageRows();
+      expect(usageRows).toHaveLength(1);
+      expect(usageRows[0]).toMatchObject({
+        workspaceId: workspace.id,
+        providerId: provider.id,
+        model: MODEL_ID,
+        streaming: true,
+        inputTokens: null,
+        outputTokens: null,
+        totalTokens: null,
+        tokenCountSource: GenerationUsageTokenCountSource.UNKNOWN,
+        outcome: GenerationUsageOutcome.FAILED,
+        errorCode: 'UPSTREAM_STREAM_ERROR',
+      });
       expect(upstream.requests).toHaveLength(1);
       expectNoSecrets(messages[1].metadata);
+      expectNoSecrets(usageRows);
+      expect(JSON.stringify(usageRows)).not.toContain(USER_PROMPT);
+      expect(JSON.stringify(usageRows)).not.toContain(PARTIAL_CONTENT);
       expect(loggedPayloadText()).not.toContain(SECRET_API_KEY);
       expect(loggedPayloadText()).not.toContain(SECRET_HEADER_VALUE);
       expect(loggedPayloadText()).not.toContain(USER_PROMPT);
@@ -404,6 +478,9 @@ describe('Chat generation PostgreSQL integration', () => {
       }))).rejects.toThrow(new NotFoundError('Session not found'));
 
       await expect(integrationPrisma.chatMessage.count()).resolves.toBe(0);
+      await expect(
+        integrationPrisma.$queryRaw<[{ count: bigint }]>`SELECT COUNT(*) AS count FROM "generation_usages"`,
+      ).resolves.toEqual([{ count: 0n }]);
       expect(upstream.requests).toHaveLength(0);
     } finally {
       await closeUpstream(upstream);

@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { logger } from '../../config/logger';
 import { ChatRepository } from './chat.repository';
 import { 
   IChatSessionCreateInput, 
@@ -18,11 +19,13 @@ import { ILlmProvider } from '../llm/llm.interface';
 import { LlmCompletionRequest, LlmMessage, TokenUsage } from '../llm/llm.types';
 import { getLlmErrorCode, logLlmEvent } from '../llm/llm.logging';
 import { CoreSingleOwnerWorkspaceAuthorizationPolicy, WorkspaceAction } from '../workspace';
+import { GenerationUsageOutcome, GenerationUsageService } from '../generationUsage';
 
 type ChatGenerationOperation = 'completion' | 'streaming';
 
 type PreparedGeneration = {
   provider: ILlmProvider;
+  workspaceId: number;
   providerMetadata: {
     providerId: string;
     providerName: string;
@@ -135,6 +138,38 @@ function ensureAuthorizedWorkspace(
   }
 
   return context.workspace.id;
+}
+
+async function recordGenerationUsageSafely(data: {
+  prepared: PreparedGeneration;
+  streaming: boolean;
+  outcome: GenerationUsageOutcome;
+  latencyMs: number;
+  usage?: TokenUsage;
+  errorCode?: string;
+  model?: string;
+}): Promise<void> {
+  try {
+    await GenerationUsageService.recordGeneration({
+      workspaceId: data.prepared.workspaceId,
+      providerId: Number(data.prepared.providerMetadata.providerId),
+      model: data.model ?? data.prepared.request.model,
+      streaming: data.streaming,
+      latencyMs: data.latencyMs,
+      usage: data.usage,
+      outcome: data.outcome,
+      errorCode: data.errorCode,
+    });
+  } catch (error) {
+    logger.error({
+      err: error,
+      providerId: data.prepared.providerMetadata.providerId,
+      providerType: data.prepared.providerMetadata.providerType,
+      model: data.prepared.request.model,
+      operation: 'generationUsage.record',
+      status: 'error',
+    }, 'Generation usage recording failed.');
+  }
 }
 
 export const ChatService = {
@@ -253,6 +288,7 @@ export const ChatService = {
 
     try {
       const completion = await prepared.provider.complete(prepared.request);
+      const latencyMs = Date.now() - prepared.startedAt;
       const assistantMessage = await ChatRepository.createMessage({
         content: completion.content,
         author: MessageAuthor.ASSISTANT,
@@ -272,13 +308,21 @@ export const ChatService = {
           params: prepared.params,
         }),
       });
+      await recordGenerationUsageSafely({
+        prepared,
+        streaming: false,
+        outcome: GenerationUsageOutcome.SUCCEEDED,
+        latencyMs,
+        usage: completion.usage,
+        model: completion.model,
+      });
       logLlmEvent({
         requestId: input.requestId,
         providerId: prepared.providerMetadata.providerId,
         providerType: prepared.providerMetadata.providerType,
         model: completion.model,
         operation: 'chat.complete',
-        latencyMs: Date.now() - prepared.startedAt,
+        latencyMs,
         status: 'success',
       });
 
@@ -287,13 +331,21 @@ export const ChatService = {
         assistantMessage,
       };
     } catch (error) {
+      const latencyMs = Date.now() - prepared.startedAt;
+      await recordGenerationUsageSafely({
+        prepared,
+        streaming: false,
+        outcome: GenerationUsageOutcome.FAILED,
+        latencyMs,
+        errorCode: getLlmErrorCode(error),
+      });
       logLlmEvent({
         requestId: input.requestId,
         providerId: prepared.providerMetadata.providerId,
         providerType: prepared.providerMetadata.providerType,
         model: prepared.request.model,
         operation: 'chat.complete',
-        latencyMs: Date.now() - prepared.startedAt,
+        latencyMs,
         status: 'error',
         errorCode: getLlmErrorCode(error),
       });
@@ -394,18 +446,27 @@ export const ChatService = {
         yield { event: 'assistant_message', data: assistantMessage };
       }
       completed = true;
+      const latencyMs = Date.now() - prepared.startedAt;
+      await recordGenerationUsageSafely({
+        prepared,
+        streaming: true,
+        outcome: GenerationUsageOutcome.SUCCEEDED,
+        latencyMs,
+        usage,
+      });
       logLlmEvent({
         requestId: input.requestId,
         providerId: prepared.providerMetadata.providerId,
         providerType: prepared.providerMetadata.providerType,
         model: prepared.request.model,
         operation: 'chat.stream',
-        latencyMs: Date.now() - prepared.startedAt,
+        latencyMs,
         status: 'success',
       });
       yield { event: 'done', data: { done: true } };
     } catch (error) {
       failed = true;
+      const latencyMs = Date.now() - prepared.startedAt;
       const errorMessage = error instanceof Error ? error.message : 'Streaming failed';
       const assistantMessage = await persistAssistantMessage({
         finishReason: 'error',
@@ -415,22 +476,38 @@ export const ChatService = {
       if (assistantMessage) {
         yield { event: 'assistant_message', data: assistantMessage };
       }
+      await recordGenerationUsageSafely({
+        prepared,
+        streaming: true,
+        outcome: GenerationUsageOutcome.FAILED,
+        latencyMs,
+        usage,
+        errorCode: getLlmErrorCode(error),
+      });
       logLlmEvent({
         requestId: input.requestId,
         providerId: prepared.providerMetadata.providerId,
         providerType: prepared.providerMetadata.providerType,
         model: prepared.request.model,
         operation: 'chat.stream',
-        latencyMs: Date.now() - prepared.startedAt,
+        latencyMs,
         status: 'error',
         errorCode: getLlmErrorCode(error),
       });
       throw error;
     } finally {
       if (!completed && !failed) {
+        const latencyMs = Date.now() - prepared.startedAt;
         await persistAssistantMessage({
           finishReason: 'aborted',
           incomplete: true,
+        });
+        await recordGenerationUsageSafely({
+          prepared,
+          streaming: true,
+          outcome: GenerationUsageOutcome.ABORTED,
+          latencyMs,
+          usage,
         });
         logLlmEvent({
           requestId: input.requestId,
@@ -438,7 +515,7 @@ export const ChatService = {
           providerType: prepared.providerMetadata.providerType,
           model: prepared.request.model,
           operation: 'chat.stream',
-          latencyMs: Date.now() - prepared.startedAt,
+          latencyMs,
           status: 'aborted',
         });
       }
@@ -468,6 +545,7 @@ export const ChatService = {
 
     return {
       provider: resolved.provider,
+      workspaceId,
       providerMetadata: {
         providerId: String(resolved.providerConfig.id),
         providerName: resolved.providerConfig.name,

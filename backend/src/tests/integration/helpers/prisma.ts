@@ -3,6 +3,7 @@ import { MessageAuthor, PrismaClient, type Prisma, UserRole, UserStatus } from '
 export const integrationPrisma = new PrismaClient();
 
 const tablesToReset = [
+  'generation_usages',
   'jobs',
   'workspace_memberships',
   'workspaces',

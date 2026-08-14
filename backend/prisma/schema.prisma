@@ -65,6 +65,7 @@ model LlmProviderConfig {
   deletedAt    DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+  generationUsages GenerationUsage[]
 
   @@index([enabled])
   @@index([deletedAt])
@@ -81,6 +82,7 @@ model Workspace {
   memberships WorkspaceMembership[]
   chatSessions ChatSession[]
   jobs         Job[]
+  generationUsages GenerationUsage[]
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt
 
@@ -140,6 +142,30 @@ model Job {
   @@map("jobs")
 }
 
+model GenerationUsage {
+  id               Int                             @id @default(autoincrement())
+  workspaceId      Int
+  providerId       Int
+  model            String
+  streaming        Boolean
+  latencyMs        Int?
+  inputTokens      Int?
+  outputTokens     Int?
+  totalTokens      Int?
+  tokenCountSource GenerationUsageTokenCountSource @default(UNKNOWN)
+  outcome          GenerationUsageOutcome
+  errorCode        String?
+  workspace        Workspace                       @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  provider         LlmProviderConfig               @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  createdAt        DateTime                        @default(now())
+
+  @@index([createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([providerId, createdAt])
+  @@index([outcome, createdAt])
+  @@map("generation_usages")
+}
+
 enum LlmProviderConfigType {
   OLLAMA
   OPENAI_COMPATIBLE
@@ -190,4 +216,16 @@ enum JobStatus {
   CANCELLED
   SUCCEEDED
   FAILED
+}
+
+enum GenerationUsageOutcome {
+  SUCCEEDED
+  FAILED
+  ABORTED
+}
+
+enum GenerationUsageTokenCountSource {
+  PROVIDER_REPORTED
+  ESTIMATED
+  UNKNOWN
 }

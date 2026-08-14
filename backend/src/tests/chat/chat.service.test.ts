@@ -3,6 +3,7 @@ import { UserRole, WorkspaceStatus, WorkspaceType } from '@prisma/client';
 import { logger } from '../../config/logger';
 import { ChatService } from '../../modules/chat/chat.service';
 import { mockPrisma } from '../setup';
+import { GenerationUsageOutcome, GenerationUsageTokenCountSource } from '../../modules/generationUsage';
 import { InvalidInputError, NotFoundError } from '../../errors';
 import { SelectedChatSession, ChatSessionWithMessages, SelectedChatMessage, SelectedChatSessionFields, ChatSessionWithMessagesFields, SelectedChatMessageFields } from '../../modules/chat/chat.model';
 import { SelectedLlmProviderConfig } from '../../modules/llm/llmProviderConfig.model';
@@ -573,6 +574,22 @@ describe('ChatService', () => {
         }),
         select: SelectedChatMessageFields,
       });
+      expect(mockPrisma.generationUsage.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          workspaceId: 25,
+          providerId: 1,
+          model: TEST_MODEL_ID,
+          streaming: false,
+          inputTokens: 3,
+          outputTokens: 4,
+          totalTokens: 7,
+          tokenCountSource: GenerationUsageTokenCountSource.PROVIDER_REPORTED,
+          outcome: GenerationUsageOutcome.SUCCEEDED,
+          errorCode: undefined,
+          latencyMs: expect.any(Number),
+        }),
+        select: expect.any(Object),
+      });
       expect(mockedLogger.info).toHaveBeenCalledWith(expect.objectContaining({
         requestId: 'req-chat-complete',
         providerId: '1',
@@ -769,6 +786,7 @@ describe('ChatService', () => {
       }, createWorkspaceContextFor(25))).rejects.toThrow('LLM provider config not found');
 
       expect(mockPrisma.chatMessage.create).not.toHaveBeenCalled();
+      expect(mockPrisma.generationUsage.create).not.toHaveBeenCalled();
     });
 
     it('should reject unsupported completion before persisting the user message', async () => {
@@ -852,6 +870,22 @@ describe('ChatService', () => {
       }, createWorkspaceContextFor(25))).rejects.toThrow('provider offline');
 
       expect(mockPrisma.chatMessage.create).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.generationUsage.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          workspaceId: 25,
+          providerId: 1,
+          model: TEST_MODEL_ID,
+          streaming: false,
+          inputTokens: undefined,
+          outputTokens: undefined,
+          totalTokens: undefined,
+          tokenCountSource: GenerationUsageTokenCountSource.UNKNOWN,
+          outcome: GenerationUsageOutcome.FAILED,
+          errorCode: 'Error',
+          latencyMs: expect.any(Number),
+        }),
+        select: expect.any(Object),
+      });
       expect(mockedLogger.error).toHaveBeenCalledWith(expect.objectContaining({
         requestId: 'req-chat-error',
         providerId: '1',
@@ -928,6 +962,22 @@ describe('ChatService', () => {
           }),
         }),
         select: SelectedChatMessageFields,
+      });
+      expect(mockPrisma.generationUsage.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          workspaceId: 25,
+          providerId: 1,
+          model: TEST_MODEL_ID,
+          streaming: true,
+          inputTokens: 1,
+          outputTokens: 2,
+          totalTokens: 3,
+          tokenCountSource: GenerationUsageTokenCountSource.PROVIDER_REPORTED,
+          outcome: GenerationUsageOutcome.SUCCEEDED,
+          errorCode: undefined,
+          latencyMs: expect.any(Number),
+        }),
+        select: expect.any(Object),
       });
       expect(mockedLogger.info).toHaveBeenCalledWith(expect.objectContaining({
         requestId: 'req-chat-stream',
@@ -1120,6 +1170,19 @@ describe('ChatService', () => {
           }),
         }),
         select: SelectedChatMessageFields,
+      });
+      expect(mockPrisma.generationUsage.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          workspaceId: 25,
+          providerId: 1,
+          model: TEST_MODEL_ID,
+          streaming: true,
+          tokenCountSource: GenerationUsageTokenCountSource.UNKNOWN,
+          outcome: GenerationUsageOutcome.FAILED,
+          errorCode: 'Error',
+          latencyMs: expect.any(Number),
+        }),
+        select: expect.any(Object),
       });
       expect(mockedLogger.error).toHaveBeenCalledWith(expect.objectContaining({
         requestId: 'req-chat-stream-error',
@@ -1314,6 +1377,19 @@ describe('ChatService', () => {
           }),
         }),
         select: SelectedChatMessageFields,
+      });
+      expect(mockPrisma.generationUsage.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          workspaceId: 25,
+          providerId: 1,
+          model: TEST_MODEL_ID,
+          streaming: true,
+          tokenCountSource: GenerationUsageTokenCountSource.UNKNOWN,
+          outcome: GenerationUsageOutcome.ABORTED,
+          errorCode: undefined,
+          latencyMs: expect.any(Number),
+        }),
+        select: expect.any(Object),
       });
       expect(mockedLogger.error).toHaveBeenCalledWith(expect.objectContaining({
         requestId: 'req-chat-stream-abort',

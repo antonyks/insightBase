@@ -11,6 +11,21 @@ type UserCreateResult = Awaited<ReturnType<PrismaClient['user']['create']>>;
 type chatSessionResult = Awaited<ReturnType<PrismaClient['chatSession']['create']>>;
 type chatMessageResult = Awaited<ReturnType<PrismaClient['chatMessage']['create']>>;
 type jobResult = SelectedJob;
+type generationUsageResult = {
+  id: number;
+  workspaceId: number;
+  providerId: number;
+  model: string;
+  streaming: boolean;
+  latencyMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  tokenCountSource: string;
+  outcome: string;
+  errorCode: string | null;
+  createdAt: Date;
+};
 
 const mockPrisma = {
   $queryRaw: jest.fn<() => Promise<unknown>>(),
@@ -67,6 +82,11 @@ const mockPrisma = {
     findFirst: jest.fn<() => Promise<jobResult | null>>(),
     findMany: jest.fn<() => Promise<jobResult[]>>(),
     update: jest.fn<() => Promise<jobResult>>(),
+    count: jest.fn<() => Promise<number>>(),
+  },
+  generationUsage: {
+    create: jest.fn<(args: unknown) => Promise<generationUsageResult>>(),
+    findMany: jest.fn<() => Promise<generationUsageResult[]>>(),
     count: jest.fn<() => Promise<number>>(),
   },
 };
@@ -147,6 +167,16 @@ jest.mock('@prisma/client', () => ({
     SUCCEEDED: 'SUCCEEDED',
     FAILED: 'FAILED',
   },
+  GenerationUsageOutcome: {
+    SUCCEEDED: 'SUCCEEDED',
+    FAILED: 'FAILED',
+    ABORTED: 'ABORTED',
+  },
+  GenerationUsageTokenCountSource: {
+    PROVIDER_REPORTED: 'PROVIDER_REPORTED',
+    ESTIMATED: 'ESTIMATED',
+    UNKNOWN: 'UNKNOWN',
+  },
   Prisma: {
     PrismaClientKnownRequestError: MockPrismaClientKnownRequestError,
   },
@@ -212,6 +242,9 @@ beforeEach(() => {
     mockPrisma.job.findMany.mockClear();
     mockPrisma.job.update.mockClear();
     mockPrisma.job.count.mockClear();
+    mockPrisma.generationUsage.create.mockClear();
+    mockPrisma.generationUsage.findMany.mockClear();
+    mockPrisma.generationUsage.count.mockClear();
 });
 
 export { mockPrisma };
