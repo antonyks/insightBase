@@ -22,7 +22,7 @@ export const useCreateProviderConfig = () => {
     mutationFn: (input: LlmProviderConfigInput) => providerConfigService.createProvider(input),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: providerConfigQueryKeys.providers });
-      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summary });
+      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summaryRoot });
       void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.systemStatus });
     },
   });
@@ -36,7 +36,7 @@ export const useUpdateProviderConfig = () => {
       providerConfigService.updateProvider(id, input),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: providerConfigQueryKeys.providers });
-      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summary });
+      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summaryRoot });
       void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.systemStatus });
     },
   });
@@ -49,7 +49,7 @@ export const useDeleteProviderConfig = () => {
     mutationFn: (id: number) => providerConfigService.deleteProvider(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: providerConfigQueryKeys.providers });
-      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summary });
+      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summaryRoot });
       void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.systemStatus });
     },
   });
@@ -62,7 +62,7 @@ export const useTestProviderConfig = () => {
     mutationFn: (id: number) => providerConfigService.testProvider(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: providerConfigQueryKeys.models });
-      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summary });
+      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summaryRoot });
       void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.systemStatus });
     },
   });
@@ -76,7 +76,7 @@ export const usePullProviderModel = () => {
       providerConfigService.pullProviderModel(id, model),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: providerConfigQueryKeys.models });
-      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summary });
+      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summaryRoot });
       void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.systemStatus });
     },
   });

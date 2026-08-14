@@ -1,8 +1,9 @@
-import React from "react";
+import React, { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertCircle,
   Ban,
+  CalendarDays,
   CheckCircle2,
   Download,
   KeyRound,
@@ -67,6 +68,22 @@ const formatDate = (value: string) => {
     day: "numeric",
     year: "numeric",
   }).format(date);
+};
+
+const formatNumber = (value: number | undefined) =>
+  value === undefined ? "..." : new Intl.NumberFormat().format(value);
+
+const formatPercent = (value: number | undefined) =>
+  value === undefined ? "..." : `${Math.round(value * 100)}%`;
+
+const formatNullableMs = (value: number | null | undefined) =>
+  value === undefined ? "..." : value === null ? "No samples" : `${formatNumber(value)} ms`;
+
+const toIsoOrUndefined = (value: string) => {
+  if (!value) return undefined;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return date.toISOString();
 };
 
 const getErrorMessage = (error: unknown) => {
@@ -165,12 +182,25 @@ const buildMetrics = (
           : `${summary.providers.disabled} disabled config${summary.providers.disabled === 1 ? "" : "s"}`,
     },
     {
-      label: "Registered Models",
-      value: modelRegistry ? String(modelRegistry.models.length) : "...",
-      detail:
-        errorProviderCount === undefined || skippedProviderCount === undefined
-          ? "Loading model registry"
-          : `${errorProviderCount} error, ${skippedProviderCount} skipped provider${skippedProviderCount === 1 ? "" : "s"}`,
+      label: "Generations",
+      value: summary ? formatNumber(summary.generation.total) : "...",
+      detail: summary
+        ? `${formatPercent(summary.generation.successRate)} success, ${formatPercent(summary.generation.abortRate)} aborted`
+        : "Loading generation summary",
+    },
+    {
+      label: "Finalized Jobs",
+      value: summary ? formatNumber(summary.jobs.finalized.total) : "...",
+      detail: summary
+        ? `${summary.jobs.finalized.failed} failed, ${summary.jobs.finalized.cancelled} cancelled`
+        : "Loading job summary",
+    },
+    {
+      label: "Provider Health",
+      value: summary ? formatPercent(1 - summary.providerHealth.errorRate) : "...",
+      detail: summary
+        ? `${summary.providerHealth.error} error sample${summary.providerHealth.error === 1 ? "" : "s"}`
+        : "Loading provider health",
     },
     {
       label: "Visible Users",
@@ -182,31 +212,102 @@ const buildMetrics = (
           : `${reviewUserCount} require review in preview`,
     },
     {
-      label: "Inference Status",
-      value:
-        errorProviderCount === undefined
-          ? "..."
-          : errorProviderCount > 0
-            ? "Review"
-            : "Online",
-      detail: modelRegistry
-        ? `${modelRegistry.providers.length} provider status${modelRegistry.providers.length === 1 ? "" : "es"} reported`
-        : "Loading provider statuses",
+      label: "Registered Models",
+      value: modelRegistry ? String(modelRegistry.models.length) : "...",
+      detail:
+        errorProviderCount === undefined || skippedProviderCount === undefined
+          ? "Loading model registry"
+          : `${errorProviderCount} error, ${skippedProviderCount} skipped provider${skippedProviderCount === 1 ? "" : "s"}`,
     },
   ];
 };
 
 const Dashboard: React.FC = () => {
-  const { providersQuery, modelsQuery, usersQuery, summaryQuery } = useAdminDashboard();
+  const [fromInput, setFromInput] = useState("");
+  const [toInput, setToInput] = useState("");
+  const [appliedPeriod, setAppliedPeriod] = useState<{ from?: string; to?: string }>({});
+  const summaryParams = useMemo(() => appliedPeriod, [appliedPeriod]);
+  const { providersQuery, modelsQuery, usersQuery, summaryQuery } = useAdminDashboard(summaryParams);
 
   const providers = providersQuery.data;
   const modelRegistry = modelsQuery.data;
   const users = usersQuery.data;
   const metrics = buildMetrics(summaryQuery.data, modelRegistry, users);
+  const summary = summaryQuery.data;
+  const periodLabel = summary
+    ? summary.period.from || summary.period.to
+      ? `${summary.period.from ? new Date(summary.period.from).toLocaleString() : "Beginning"} to ${
+          summary.period.to ? new Date(summary.period.to).toLocaleString() : "now"
+        }`
+      : "All time"
+    : "Loading";
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="rounded-md border border-slate-200 bg-white px-4 py-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-950">
+              <CalendarDays className="h-4 w-4 text-cyan-700" aria-hidden="true" />
+              Analytics Window
+            </div>
+            <p className="mt-1 text-xs text-slate-500">{periodLabel}</p>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+              From
+              <input
+                type="datetime-local"
+                value={fromInput}
+                onChange={(event) => setFromInput(event.target.value)}
+                className="h-8 rounded-md border border-slate-200 px-2 text-xs text-slate-800"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+              To
+              <input
+                type="datetime-local"
+                value={toInput}
+                onChange={(event) => setToInput(event.target.value)}
+                className="h-8 rounded-md border border-slate-200 px-2 text-xs text-slate-800"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() =>
+                setAppliedPeriod({
+                  from: toIsoOrUndefined(fromInput),
+                  to: toIsoOrUndefined(toInput),
+                })
+              }
+              className="inline-flex h-8 items-center rounded-md bg-slate-950 px-3 text-xs font-semibold text-white hover:bg-slate-800"
+            >
+              Apply
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setFromInput("");
+                setToInput("");
+                setAppliedPeriod({});
+              }}
+              className="inline-flex h-8 items-center rounded-md border border-slate-200 px-3 text-xs font-medium text-slate-700 hover:bg-slate-100"
+            >
+              All Time
+            </button>
+          </div>
+        </div>
+        {summaryQuery.isError && (
+          <div className="mt-3">
+            <SectionError
+              message={getErrorMessage(summaryQuery.error)}
+              onRetry={() => void summaryQuery.refetch()}
+            />
+          </div>
+        )}
+      </section>
+
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
         {metrics.map((item) => (
           <div key={item.label} className="rounded-md border border-slate-200 bg-white px-4 py-3">
             <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
@@ -216,6 +317,76 @@ const Dashboard: React.FC = () => {
             <div className="mt-1 text-xs text-slate-500">{item.detail}</div>
           </div>
         ))}
+      </section>
+
+      <section className="grid gap-4 lg:grid-cols-3">
+        <div className="rounded-md border border-slate-200 bg-white px-4 py-3">
+          <h2 className="text-sm font-semibold text-slate-950">Generation Usage</h2>
+          <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <dt className="text-xs text-slate-500">Succeeded</dt>
+              <dd className="font-medium text-slate-900">{formatNumber(summary?.generation.succeeded)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Failed</dt>
+              <dd className="font-medium text-slate-900">{formatNumber(summary?.generation.failed)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Average Latency</dt>
+              <dd className="font-medium text-slate-900">{formatNullableMs(summary?.generation.averageLatencyMs)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Tokens</dt>
+              <dd className="font-medium text-slate-900">{formatNumber(summary?.generation.totalTokens)}</dd>
+            </div>
+          </dl>
+        </div>
+        <div className="rounded-md border border-slate-200 bg-white px-4 py-3">
+          <h2 className="text-sm font-semibold text-slate-950">Job Operations</h2>
+          <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <dt className="text-xs text-slate-500">Current Jobs</dt>
+              <dd className="font-medium text-slate-900">{formatNumber(summary?.jobs.total)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Running / Queued</dt>
+              <dd className="font-medium text-slate-900">
+                {summary ? `${summary.jobs.current.running} / ${summary.jobs.current.queued}` : "..."}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Queue Wait</dt>
+              <dd className="font-medium text-slate-900">{formatNullableMs(summary?.jobs.averageQueueWaitMs)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Execution</dt>
+              <dd className="font-medium text-slate-900">{formatNullableMs(summary?.jobs.averageExecutionDurationMs)}</dd>
+            </div>
+          </dl>
+        </div>
+        <div className="rounded-md border border-slate-200 bg-white px-4 py-3">
+          <h2 className="text-sm font-semibold text-slate-950">Provider Samples</h2>
+          <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <dt className="text-xs text-slate-500">Samples</dt>
+              <dd className="font-medium text-slate-900">{formatNumber(summary?.providerHealth.total)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Errors</dt>
+              <dd className="font-medium text-slate-900">{formatNumber(summary?.providerHealth.error)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Average Latency</dt>
+              <dd className="font-medium text-slate-900">{formatNullableMs(summary?.providerHealth.averageLatencyMs)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Latest</dt>
+              <dd className="font-medium text-slate-900">
+                {summary?.providerHealth.latestSampleAt ? formatDate(summary.providerHealth.latestSampleAt) : "No samples"}
+              </dd>
+            </div>
+          </dl>
+        </div>
       </section>
 
       <section className="rounded-md border border-slate-200 bg-white">

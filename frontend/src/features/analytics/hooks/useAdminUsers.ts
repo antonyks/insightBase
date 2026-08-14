@@ -38,7 +38,7 @@ export const useCreateAdminUser = () => {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: adminUserQueryKeys.lists() });
       void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.users });
-      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summary });
+      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summaryRoot });
     },
   });
 };
@@ -53,7 +53,7 @@ export const useUpdateAdminUser = () => {
       void queryClient.invalidateQueries({ queryKey: adminUserQueryKeys.lists() });
       void queryClient.invalidateQueries({ queryKey: adminUserQueryKeys.detail(user.id) });
       void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.users });
-      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summary });
+      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summaryRoot });
     },
   });
 };
@@ -67,7 +67,7 @@ const useUserStatusMutation = (mutationFn: (id: number) => Promise<unknown>) => 
       void queryClient.invalidateQueries({ queryKey: adminUserQueryKeys.lists() });
       void queryClient.invalidateQueries({ queryKey: adminUserQueryKeys.detail(id) });
       void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.users });
-      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summary });
+      void queryClient.invalidateQueries({ queryKey: adminDashboardQueryKeys.summaryRoot });
     },
   });
 };

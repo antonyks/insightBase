@@ -106,21 +106,29 @@ const mockPrisma = {
     findMany: jest.fn<() => Promise<jobResult[]>>(),
     update: jest.fn<() => Promise<jobResult>>(),
     count: jest.fn<() => Promise<number>>(),
+    groupBy: jest.fn<() => Promise<unknown[]>>(),
   },
   generationUsage: {
     create: jest.fn<(args: unknown) => Promise<generationUsageResult>>(),
     findMany: jest.fn<() => Promise<generationUsageResult[]>>(),
     count: jest.fn<() => Promise<number>>(),
+    groupBy: jest.fn<() => Promise<unknown[]>>(),
+    aggregate: jest.fn<() => Promise<unknown>>(),
   },
   jobMetric: {
     create: jest.fn<(args: unknown) => Promise<jobMetricResult>>(),
     findMany: jest.fn<() => Promise<jobMetricResult[]>>(),
     count: jest.fn<() => Promise<number>>(),
+    groupBy: jest.fn<() => Promise<unknown[]>>(),
+    aggregate: jest.fn<() => Promise<unknown>>(),
   },
   providerHealthSample: {
     create: jest.fn<(args: unknown) => Promise<providerHealthSampleResult>>(),
     findMany: jest.fn<() => Promise<providerHealthSampleResult[]>>(),
     count: jest.fn<() => Promise<number>>(),
+    groupBy: jest.fn<() => Promise<unknown[]>>(),
+    aggregate: jest.fn<() => Promise<unknown>>(),
+    findFirst: jest.fn<() => Promise<Pick<providerHealthSampleResult, 'createdAt'> | null>>(),
   },
 };
 
@@ -289,15 +297,23 @@ beforeEach(() => {
     mockPrisma.job.findMany.mockClear();
     mockPrisma.job.update.mockClear();
     mockPrisma.job.count.mockClear();
+    mockPrisma.job.groupBy.mockClear();
     mockPrisma.generationUsage.create.mockClear();
     mockPrisma.generationUsage.findMany.mockClear();
     mockPrisma.generationUsage.count.mockClear();
+    mockPrisma.generationUsage.groupBy.mockClear();
+    mockPrisma.generationUsage.aggregate.mockClear();
     mockPrisma.jobMetric.create.mockClear();
     mockPrisma.jobMetric.findMany.mockClear();
     mockPrisma.jobMetric.count.mockClear();
+    mockPrisma.jobMetric.groupBy.mockClear();
+    mockPrisma.jobMetric.aggregate.mockClear();
     mockPrisma.providerHealthSample.create.mockClear();
     mockPrisma.providerHealthSample.findMany.mockClear();
     mockPrisma.providerHealthSample.count.mockClear();
+    mockPrisma.providerHealthSample.groupBy.mockClear();
+    mockPrisma.providerHealthSample.aggregate.mockClear();
+    mockPrisma.providerHealthSample.findFirst.mockClear();
 });
 
 export { mockPrisma };

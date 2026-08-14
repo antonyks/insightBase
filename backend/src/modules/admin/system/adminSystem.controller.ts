@@ -5,7 +5,7 @@ import { AdminSystemService } from './adminSystem.service';
 
 export const AdminSystemController = {
   async getAnalyticsSummary(_req: AuthenticatedRequest, res: Response): Promise<void> {
-    const summary = await AdminSystemService.getAnalyticsSummary();
+    const summary = await AdminSystemService.getAnalyticsSummary(_req.query);
     res.status(200).json({ data: summary });
   },
 

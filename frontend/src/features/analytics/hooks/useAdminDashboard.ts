@@ -1,15 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
+import type { AnalyticsSummaryParams } from "../services/adminDashboardService";
 import { adminDashboardService } from "../services/adminDashboardService";
 
 export const adminDashboardQueryKeys = {
   providers: ["admin-dashboard", "providers"] as const,
   models: ["admin-dashboard", "models"] as const,
   users: ["admin-dashboard", "users"] as const,
-  summary: ["admin-dashboard", "summary"] as const,
+  summaryRoot: ["admin-dashboard", "summary"] as const,
+  summary: (params: AnalyticsSummaryParams = {}) => ["admin-dashboard", "summary", params] as const,
   systemStatus: ["admin-dashboard", "system-status"] as const,
 };
 
-export const useAdminDashboard = () => {
+export const useAdminDashboard = (summaryParams: AnalyticsSummaryParams = {}) => {
   const providersQuery = useQuery({
     queryKey: adminDashboardQueryKeys.providers,
     queryFn: adminDashboardService.getProviders,
@@ -26,8 +28,8 @@ export const useAdminDashboard = () => {
   });
 
   const summaryQuery = useQuery({
-    queryKey: adminDashboardQueryKeys.summary,
-    queryFn: adminDashboardService.getAnalyticsSummary,
+    queryKey: adminDashboardQueryKeys.summary(summaryParams),
+    queryFn: () => adminDashboardService.getAnalyticsSummary(summaryParams),
   });
 
   const systemStatusQuery = useQuery({

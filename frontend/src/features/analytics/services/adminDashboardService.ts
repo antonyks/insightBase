@@ -10,6 +10,11 @@ import { providerConfigService } from "./providerConfigService";
 
 const USER_PREVIEW_LIMIT = 8;
 
+export interface AnalyticsSummaryParams {
+  from?: string;
+  to?: string;
+}
+
 export const adminDashboardService = {
   getProviders: providerConfigService.getProviders,
 
@@ -27,9 +32,10 @@ export const adminDashboardService = {
     return data.data;
   },
 
-  async getAnalyticsSummary(): Promise<AdminAnalyticsSummary> {
+  async getAnalyticsSummary(params: AnalyticsSummaryParams = {}): Promise<AdminAnalyticsSummary> {
     const { data } = await axiosClient.get<ApiResponse<AdminAnalyticsSummary>>(
       "/admin/analytics/summary",
+      { params },
     );
 
     return data.data;
