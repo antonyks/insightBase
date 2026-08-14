@@ -1,8 +1,9 @@
 import { ENV } from '../../config/env';
+import { logger } from '../../config/logger';
 import { InvalidInputError, NotFoundError } from '../../errors';
 import { ILlmProvider } from './llm.interface';
 import { LlmProviderConfigRepository } from './llmProviderConfig.repository';
-import { fromDbProviderType } from './llmProviderConfig.types';
+import { fromDbProviderType, toDbProviderType } from './llmProviderConfig.types';
 import { SelectedLlmProviderConfig } from './llmProviderConfig.model';
 import { LlmRegistryService } from './llm.service';
 import {
@@ -19,10 +20,16 @@ import {
   LlmStreamChunk,
   LlmProviderType,
   UNSUPPORTED_LLM_PROVIDER_CAPABILITIES,
+  LlmProviderModelListResult,
 } from './llm.types';
 import { OllamaProvider } from './providers/ollama.provider';
 import { OpenAiCompatibleProvider } from './providers/openaiCompatible.provider';
 import { getLlmErrorCode, logLlmEvent } from './llm.logging';
+import {
+  ProviderHealthSampleOperation,
+  ProviderHealthSampleService,
+  ProviderHealthSampleStatus,
+} from '../providerHealthSample';
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown provider error';
@@ -217,23 +224,32 @@ export const LlmRuntimeService = {
       } satisfies ILlmProvider;
     });
 
-    return new LlmRegistryService(adapters).listAvailableModels();
+    return new LlmRegistryService(adapters, (observation) => recordModelRegistrySampleSafely(
+      observation.provider,
+      observation.latencyMs,
+    )).listAvailableModels();
   },
 
   async listProviderModels(id: number): Promise<LlmModelListResult> {
     const provider = await this.getProviderConfigById(id);
     const config = toProviderConfig(provider);
     const adapter = createAdapter(config);
+    const startedAt = Date.now();
 
     if (!adapter) {
       const unavailable = adapterUnavailable(config);
+      const providerResult = toProviderModelListResult(unavailable);
+      await recordModelRegistrySampleSafely(providerResult, Date.now() - startedAt);
       return {
         models: [],
-        providers: [toProviderModelListResult(unavailable)],
+        providers: [providerResult],
       };
     }
 
-    return new LlmRegistryService([adapter]).listAvailableModels();
+    return new LlmRegistryService([adapter], (observation) => recordModelRegistrySampleSafely(
+      observation.provider,
+      observation.latencyMs,
+    )).listAvailableModels();
   },
 
   async testProvider(id: number): Promise<LlmProviderOperationResult> {
@@ -243,7 +259,9 @@ export const LlmRuntimeService = {
     const startedAt = Date.now();
 
     if (!adapter) {
-      return adapterUnavailable(config);
+      const result = adapterUnavailable(config);
+      await recordProviderOperationSampleSafely(result, Date.now() - startedAt);
+      return result;
     }
 
     logLlmEvent({
@@ -262,12 +280,14 @@ export const LlmRuntimeService = {
         latencyMs: Date.now() - startedAt,
         status: 'success',
       });
-      return {
+      const result: LlmProviderOperationResult = {
         providerId: adapter.id,
         providerName: adapter.config.name,
         providerType: adapter.config.type,
         status: 'success',
       };
+      await recordProviderOperationSampleSafely(result, Date.now() - startedAt);
+      return result;
     } catch (error) {
       logLlmEvent({
         providerId: adapter.id,
@@ -277,7 +297,7 @@ export const LlmRuntimeService = {
         status: 'error',
         errorCode: getLlmErrorCode(error),
       });
-      return {
+      const result: LlmProviderOperationResult = {
         providerId: adapter.id,
         providerName: adapter.config.name,
         providerType: adapter.config.type,
@@ -285,6 +305,8 @@ export const LlmRuntimeService = {
         errorMessage: getErrorMessage(error),
         errorCode: getErrorCode(error),
       };
+      await recordProviderOperationSampleSafely(result, Date.now() - startedAt);
+      return result;
     }
   },
 
@@ -423,5 +445,61 @@ export const LlmRuntimeService = {
     };
   },
 };
+
+async function recordModelRegistrySampleSafely(
+  provider: LlmProviderModelListResult,
+  latencyMs: number,
+): Promise<void> {
+  await recordProviderSampleSafely({
+    providerId: Number(provider.providerId),
+    providerType: toDbProviderType(provider.providerType),
+    operation: ProviderHealthSampleOperation.MODEL_REGISTRY,
+    status: toProviderHealthSampleStatus(provider.status),
+    latencyMs,
+    modelCount: provider.modelCount,
+    errorCode: provider.errorCode,
+  });
+}
+
+async function recordProviderOperationSampleSafely(
+  result: LlmProviderOperationResult,
+  latencyMs: number,
+): Promise<void> {
+  await recordProviderSampleSafely({
+    providerId: Number(result.providerId),
+    providerType: toDbProviderType(result.providerType),
+    operation: ProviderHealthSampleOperation.PROVIDER_TEST,
+    status: toProviderHealthSampleStatus(result.status),
+    latencyMs,
+    errorCode: result.errorCode,
+  });
+}
+
+async function recordProviderSampleSafely(input: Parameters<
+  typeof ProviderHealthSampleService.recordSample
+>[0]): Promise<void> {
+  if (!Number.isInteger(input.providerId)) return;
+
+  try {
+    await ProviderHealthSampleService.recordSample(input);
+  } catch (error) {
+    logger.error({
+      err: error,
+      providerId: input.providerId,
+      providerType: input.providerType,
+      operation: input.operation,
+      status: input.status,
+      errorCode: input.errorCode,
+    }, 'Provider health sample recording failed.');
+  }
+}
+
+function toProviderHealthSampleStatus(
+  status: LlmProviderModelListResult['status'],
+): ProviderHealthSampleStatus {
+  if (status === 'success') return ProviderHealthSampleStatus.SUCCESS;
+  if (status === 'skipped') return ProviderHealthSampleStatus.SKIPPED;
+  return ProviderHealthSampleStatus.ERROR;
+}
 
 export type { LlmProviderType };

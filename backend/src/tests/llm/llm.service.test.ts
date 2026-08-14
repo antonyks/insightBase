@@ -1,6 +1,9 @@
 import { jest } from '@jest/globals';
 import { ILlmProvider } from '../../modules/llm/llm.interface';
-import { LlmRegistryService } from '../../modules/llm/llm.service';
+import {
+  LlmProviderModelListObserver,
+  LlmRegistryService,
+} from '../../modules/llm/llm.service';
 import {
   LlmCompletionRequest,
   LlmCompletionResponse,
@@ -269,6 +272,34 @@ describe('LlmRegistryService', () => {
           errorMessage: 'Unknown provider error',
         },
       ],
+    });
+  });
+
+  it('observes each provider listing result without changing the response shape', async () => {
+    const listModels = jest.fn<() => Promise<LlmProviderListedModel[]>>().mockResolvedValue([
+      createListedModel(TEST_MODEL_ID),
+    ]);
+    const observer = jest.fn<LlmProviderModelListObserver>();
+    const service = new LlmRegistryService([
+      createProvider({ id: 'ollama', name: 'Local Ollama', type: 'ollama' }, listModels),
+    ], observer);
+
+    const result = await service.listAvailableModels();
+
+    expect(result.providers).toEqual([
+      expect.objectContaining({
+        providerId: 'ollama',
+        status: 'success',
+        modelCount: 1,
+      }),
+    ]);
+    expect(observer).toHaveBeenCalledWith({
+      provider: expect.objectContaining({
+        providerId: 'ollama',
+        status: 'success',
+        modelCount: 1,
+      }),
+      latencyMs: expect.any(Number),
     });
   });
 });

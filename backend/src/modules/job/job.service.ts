@@ -1,4 +1,5 @@
 import { Prisma, JobStatus } from '@prisma/client';
+import { logger } from '../../config/logger';
 import { InvalidInputError, NotFoundError } from '../../errors';
 import {
   assertValidJobProgress,
@@ -17,6 +18,7 @@ import {
   StaleRunningJobRecoveryResult,
 } from './job.types';
 import { bestEffortNotifyJobChanged, JobNotificationHint } from './job.notifications';
+import { JobMetricOutcome, JobMetricService } from '../jobMetric';
 
 const ENQUEUE_FAILED_ERROR_CODE = 'JOB_QUEUE_ENQUEUE_FAILED';
 const ENQUEUE_FAILED_ERROR_MESSAGE = 'Job queue enqueue failed.';
@@ -157,7 +159,7 @@ export const JobService = {
 
       for (const job of staleJobs) {
         if (job.attempts >= job.maxAttempts) {
-          await updateJobAndNotify(job.id, {
+          await finalizeJobAndNotify(job.id, {
             status: JobStatus.FAILED,
             stage: 'failed',
             errorCode: STALE_WORKER_ERROR_CODE,
@@ -180,7 +182,7 @@ export const JobService = {
             throw new Error('pg-boss did not return a message identifier.');
           }
         } catch {
-          await updateJobAndNotify(job.id, {
+          await finalizeJobAndNotify(job.id, {
             status: JobStatus.FAILED,
             stage: 'enqueue_failed',
             errorCode: ENQUEUE_FAILED_ERROR_CODE,
@@ -297,7 +299,7 @@ export const JobService = {
     if (job.status === JobStatus.CANCELLED || isTerminalJobStatus(job.status)) return job;
 
     assertValidJobStatusTransition(job.status, JobStatus.CANCELLED);
-    return updateJobAndNotify(job.id, {
+    return finalizeJobAndNotify(job.id, {
       status: JobStatus.CANCELLED,
       stage: 'cancelled',
       completedAt: job.completedAt ?? new Date(),
@@ -325,7 +327,7 @@ export const JobService = {
     if (job.status === JobStatus.SUCCEEDED || isTerminalJobStatus(job.status)) return job;
 
     assertValidJobStatusTransition(job.status, JobStatus.SUCCEEDED);
-    return updateJobAndNotify(job.id, {
+    return finalizeJobAndNotify(job.id, {
       status: JobStatus.SUCCEEDED,
       progress: 100,
       stage,
@@ -343,7 +345,7 @@ export const JobService = {
     if (job.status === JobStatus.FAILED || isTerminalJobStatus(job.status)) return job;
 
     assertValidJobStatusTransition(job.status, JobStatus.FAILED);
-    return updateJobAndNotify(job.id, {
+    return finalizeJobAndNotify(job.id, {
       status: JobStatus.FAILED,
       stage: 'failed',
       errorCode,
@@ -435,7 +437,7 @@ function markEnqueueFailed(
   jobId: number,
   db?: Parameters<typeof JobRepository.updateJob>[2],
 ): Promise<SelectedJob> {
-  return JobRepository.updateJob(jobId, {
+  return finalizeJob(jobId, {
     status: JobStatus.FAILED,
     stage: 'enqueue_failed',
     errorCode: ENQUEUE_FAILED_ERROR_CODE,
@@ -445,7 +447,7 @@ function markEnqueueFailed(
 }
 
 function markCancelledAndNotify(jobId: number): Promise<SelectedJob> {
-  return updateJobAndNotify(jobId, {
+  return finalizeJobAndNotify(jobId, {
     status: JobStatus.CANCELLED,
     stage: 'cancelled',
     completedAt: new Date(),
@@ -461,6 +463,70 @@ async function updateJobAndNotify(
   const job = await JobRepository.updateJob(jobId, data, db);
   await bestEffortNotifyJobChanged(job.id, notificationHint);
   return job;
+}
+
+async function finalizeJob(
+  jobId: number,
+  data: Prisma.JobUpdateInput,
+  db?: Parameters<typeof JobRepository.updateJob>[2],
+): Promise<SelectedJob> {
+  const job = await JobRepository.updateJob(jobId, data, db);
+  await recordJobMetricSafely(job, db);
+  return job;
+}
+
+async function finalizeJobAndNotify(
+  jobId: number,
+  data: Prisma.JobUpdateInput,
+  notificationHint: JobNotificationHint,
+  db?: Parameters<typeof JobRepository.updateJob>[2],
+): Promise<SelectedJob> {
+  const job = await updateJobAndNotify(jobId, data, notificationHint, db);
+  await recordJobMetricSafely(job, db);
+  return job;
+}
+
+async function recordJobMetricSafely(
+  job: SelectedJob,
+  db?: Parameters<typeof JobMetricService.recordFinalizedJob>[1],
+): Promise<void> {
+  const outcome = toJobMetricOutcome(job.status);
+  if (!outcome) return;
+
+  try {
+    await JobMetricService.recordFinalizedJob({
+      jobId: job.id,
+      workspaceId: job.workspaceId,
+      jobType: job.type,
+      outcome,
+      attempts: job.attempts,
+      queueWaitMs: differenceMs(job.startedAt, job.createdAt),
+      executionDurationMs: differenceMs(job.completedAt, job.startedAt),
+      errorCode: job.errorCode ?? undefined,
+    }, db);
+  } catch (error) {
+    logger.error({
+      err: error,
+      jobId: job.id,
+      workspaceId: job.workspaceId,
+      jobType: job.type,
+      outcome,
+      operation: 'jobMetric.record',
+      status: 'error',
+    }, 'Job metric recording failed.');
+  }
+}
+
+function toJobMetricOutcome(status: JobStatus): JobMetricOutcome | null {
+  if (status === JobStatus.SUCCEEDED) return JobMetricOutcome.SUCCEEDED;
+  if (status === JobStatus.FAILED) return JobMetricOutcome.FAILED;
+  if (status === JobStatus.CANCELLED) return JobMetricOutcome.CANCELLED;
+  return null;
+}
+
+function differenceMs(end: Date | null, start: Date | null): number | undefined {
+  if (!end || !start) return undefined;
+  return end.getTime() - start.getTime();
 }
 
 function createJobQueueSendOptions(maxAttempts: number): JobQueueSendOptions {

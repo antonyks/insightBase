@@ -1,6 +1,11 @@
 import jwt from 'jsonwebtoken';
 import { ServerResponse } from 'node:http';
-import { Prisma, UserRole } from '@prisma/client';
+import {
+  Prisma,
+  ProviderHealthSampleOperation,
+  ProviderHealthSampleStatus,
+  UserRole,
+} from '@prisma/client';
 import { logger } from '../../../config/logger';
 import { authenticate, authorizeRoles } from '../../../middleware';
 import { LlmProviderController } from '../../../modules/admin/llm/llmProvider.controller';
@@ -256,6 +261,20 @@ describe('Persisted LLM provider and model registry integration', () => {
         authorization: `Bearer ${SECRET_API_KEY}`,
         'x-provider-header': EXTRA_HEADER_VALUE,
       });
+      await expect(
+        integrationPrisma.providerHealthSample.findFirstOrThrow({
+          where: {
+            providerId: openAiProvider.id,
+            operation: ProviderHealthSampleOperation.PROVIDER_TEST,
+          },
+        }),
+      ).resolves.toMatchObject({
+        providerId: openAiProvider.id,
+        providerType: 'OPENAI_COMPATIBLE',
+        operation: ProviderHealthSampleOperation.PROVIDER_TEST,
+        status: ProviderHealthSampleStatus.SUCCESS,
+        errorCode: null,
+      });
 
       const capturedResponseText = JSON.stringify([
         responseBody(listResponse),
@@ -352,6 +371,27 @@ describe('Persisted LLM provider and model registry integration', () => {
       expect(openAiUpstream.requests).toHaveLength(1);
       expect(disabledUpstream.requests).toHaveLength(0);
       expect(deletedUpstream.requests).toHaveLength(0);
+      await expect(
+        integrationPrisma.providerHealthSample.findMany({
+          where: {
+            operation: ProviderHealthSampleOperation.MODEL_REGISTRY,
+          },
+          orderBy: { providerId: 'asc' },
+        }),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          providerId: ollamaProvider.id,
+          providerType: 'OLLAMA',
+          status: ProviderHealthSampleStatus.SUCCESS,
+          modelCount: 1,
+        }),
+        expect.objectContaining({
+          providerId: openAiProvider.id,
+          providerType: 'OPENAI_COMPATIBLE',
+          status: ProviderHealthSampleStatus.SUCCESS,
+          modelCount: 1,
+        }),
+      ]);
       expect(JSON.stringify(responseBody(response))).not.toContain(SECRET_API_KEY);
       expect(loggedPayloadText()).not.toContain(SECRET_API_KEY);
       expect(loggedPayloadText()).not.toContain(EXTRA_HEADER_VALUE);

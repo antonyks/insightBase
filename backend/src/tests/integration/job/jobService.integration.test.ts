@@ -1,4 +1,4 @@
-import { JobStatus, WorkspaceType } from '@prisma/client';
+import { JobMetricOutcome, JobStatus, WorkspaceType } from '@prisma/client';
 import {
   JobQueuePayload,
   JobQueueTransport,
@@ -225,6 +225,16 @@ describe('JobService integration', () => {
     });
     await expect(JobService.requestCancellation(job.id)).resolves.toMatchObject({
       status: JobStatus.SUCCEEDED,
+    });
+    await expect(
+      integrationPrisma.jobMetric.findUniqueOrThrow({ where: { jobId: job.id } }),
+    ).resolves.toMatchObject({
+      jobId: job.id,
+      workspaceId: workspace.id,
+      jobType: 'validation.lifecycle',
+      outcome: JobMetricOutcome.SUCCEEDED,
+      attempts: 1,
+      errorCode: null,
     });
   });
 });

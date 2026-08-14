@@ -6,6 +6,15 @@ import {
   LlmProviderModelListResult,
 } from './llm.types';
 
+export interface LlmProviderModelListObservation {
+  provider: LlmProviderModelListResult;
+  latencyMs: number;
+}
+
+export type LlmProviderModelListObserver = (
+  observation: LlmProviderModelListObservation,
+) => Promise<void> | void;
+
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown provider error';
 }
@@ -19,7 +28,10 @@ function getErrorCode(error: unknown): string | undefined {
 }
 
 export class LlmRegistryService {
-  constructor(private readonly providers: ILlmProvider[]) {}
+  constructor(
+    private readonly providers: ILlmProvider[],
+    private readonly observer?: LlmProviderModelListObserver,
+  ) {}
 
   async listAvailableModels(): Promise<LlmModelListResult> {
     const providerResults = await Promise.all(
@@ -36,6 +48,7 @@ export class LlmRegistryService {
     models: LlmListedModel[];
     provider: LlmProviderModelListResult;
   }> {
+    const startedAt = Date.now();
     const baseModelResult = {
       providerId: provider.id,
       providerName: provider.config.name,
@@ -47,7 +60,7 @@ export class LlmRegistryService {
     };
 
     if (!provider.isEnabled) {
-      return {
+      return this.observeProviderResult({
         models: [],
         provider: {
           ...baseProviderResult,
@@ -55,7 +68,7 @@ export class LlmRegistryService {
           modelCount: 0,
           capabilities: provider.capabilities,
         },
-      };
+      }, startedAt);
     }
 
     try {
@@ -68,7 +81,7 @@ export class LlmRegistryService {
         capabilities: model.capabilities,
       }));
 
-      return {
+      return this.observeProviderResult({
         models,
         provider: {
           ...baseProviderResult,
@@ -76,9 +89,9 @@ export class LlmRegistryService {
           modelCount: models.length,
           capabilities: provider.capabilities,
         },
-      };
+      }, startedAt);
     } catch (error) {
-      return {
+      return this.observeProviderResult({
         models: [],
         provider: {
           ...baseProviderResult,
@@ -88,7 +101,24 @@ export class LlmRegistryService {
           errorMessage: getErrorMessage(error),
           errorCode: getErrorCode(error),
         },
-      };
+      }, startedAt);
     }
+  }
+
+  private async observeProviderResult(result: {
+    models: LlmListedModel[];
+    provider: LlmProviderModelListResult;
+  }, startedAt: number): Promise<{
+    models: LlmListedModel[];
+    provider: LlmProviderModelListResult;
+  }> {
+    if (this.observer) {
+      await this.observer({
+        provider: result.provider,
+        latencyMs: Date.now() - startedAt,
+      });
+    }
+
+    return result;
   }
 }

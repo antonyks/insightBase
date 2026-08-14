@@ -2,7 +2,7 @@ import { Prisma, JobStatus } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { JobSelectFields, SelectedJob } from './job.model';
 
-type JobRepositoryClient = Pick<Prisma.TransactionClient, 'job' | '$queryRaw'>;
+type JobRepositoryClient = Pick<Prisma.TransactionClient, 'job' | 'jobMetric' | '$queryRaw'>;
 
 export interface CreateQueuedJobData {
   workspaceId: number;

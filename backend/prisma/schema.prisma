@@ -66,6 +66,7 @@ model LlmProviderConfig {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   generationUsages GenerationUsage[]
+  providerHealthSamples ProviderHealthSample[]
 
   @@index([enabled])
   @@index([deletedAt])
@@ -83,6 +84,7 @@ model Workspace {
   chatSessions ChatSession[]
   jobs         Job[]
   generationUsages GenerationUsage[]
+  jobMetrics      JobMetric[]
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt
 
@@ -133,6 +135,7 @@ model Job {
   completedAt        DateTime?
   heartbeatAt        DateTime?
   cancelRequestedAt  DateTime?
+  metric             JobMetric?
 
   @@index([workspaceId, status])
   @@index([workspaceId, createdAt])
@@ -164,6 +167,45 @@ model GenerationUsage {
   @@index([providerId, createdAt])
   @@index([outcome, createdAt])
   @@map("generation_usages")
+}
+
+model JobMetric {
+  id                  Int              @id @default(autoincrement())
+  jobId               Int              @unique
+  workspaceId         Int
+  jobType             String
+  outcome             JobMetricOutcome
+  attempts            Int
+  queueWaitMs         Int?
+  executionDurationMs Int?
+  errorCode           String?
+  job                 Job              @relation(fields: [jobId], references: [id], onDelete: Restrict)
+  workspace           Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  createdAt           DateTime         @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@index([jobType, createdAt])
+  @@index([outcome, createdAt])
+  @@map("job_metrics")
+}
+
+model ProviderHealthSample {
+  id          Int                           @id @default(autoincrement())
+  providerId  Int
+  providerType LlmProviderConfigType
+  operation   ProviderHealthSampleOperation
+  status      ProviderHealthSampleStatus
+  latencyMs   Int?
+  modelCount  Int?
+  errorCode   String?
+  provider    LlmProviderConfig             @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  createdAt   DateTime                      @default(now())
+
+  @@index([providerId, createdAt])
+  @@index([providerType, createdAt])
+  @@index([operation, createdAt])
+  @@index([status, createdAt])
+  @@map("provider_health_samples")
 }
 
 enum LlmProviderConfigType {
@@ -228,4 +270,21 @@ enum GenerationUsageTokenCountSource {
   PROVIDER_REPORTED
   ESTIMATED
   UNKNOWN
+}
+
+enum JobMetricOutcome {
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum ProviderHealthSampleOperation {
+  MODEL_REGISTRY
+  PROVIDER_TEST
+}
+
+enum ProviderHealthSampleStatus {
+  SUCCESS
+  ERROR
+  SKIPPED
 }

@@ -261,6 +261,16 @@ describe('JobService', () => {
       }),
       select: expect.objectContaining({ id: true }),
     });
+    expect(mockPrisma.jobMetric.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        jobId: 88,
+        workspaceId: 10,
+        jobType: 'validation.fixture',
+        outcome: 'FAILED',
+        errorCode: 'JOB_QUEUE_ENQUEUE_FAILED',
+      }),
+      select: expect.any(Object),
+    });
     const updateCalls = mockPrisma.job.update.mock.calls as unknown as Array<
       [{ data: unknown }]
     >;
@@ -351,6 +361,14 @@ describe('JobService', () => {
       }),
       select: expect.objectContaining({ id: true }),
     });
+    expect(mockPrisma.jobMetric.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        jobId: 9,
+        outcome: 'FAILED',
+        errorCode: 'JOB_QUEUE_ENQUEUE_FAILED',
+      }),
+      select: expect.any(Object),
+    });
   });
 
   it('does not mark reconciliation jobs failed when queue id persistence fails', async () => {
@@ -437,6 +455,7 @@ describe('JobService', () => {
       },
       select: expect.objectContaining({ id: true }),
     });
+    expect(mockPrisma.jobMetric.create).not.toHaveBeenCalled();
   });
 
   it('marks exhausted stale running jobs failed with sanitized stale worker error', async () => {
@@ -479,6 +498,14 @@ describe('JobService', () => {
       }),
       select: expect.objectContaining({ id: true }),
     });
+    expect(mockPrisma.jobMetric.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        jobId: 42,
+        outcome: 'FAILED',
+        errorCode: 'JOB_WORKER_STALE',
+      }),
+      select: expect.any(Object),
+    });
   });
 
   it('marks stale requeue enqueue failures as visible failed jobs', async () => {
@@ -517,6 +544,14 @@ describe('JobService', () => {
         sanitizedError: 'Job queue enqueue failed.',
       }),
       select: expect.objectContaining({ id: true }),
+    });
+    expect(mockPrisma.jobMetric.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        jobId: 43,
+        outcome: 'FAILED',
+        errorCode: 'JOB_QUEUE_ENQUEUE_FAILED',
+      }),
+      select: expect.any(Object),
     });
     expect(JSON.stringify(mockPrisma.job.update.mock.calls)).not.toContain('secret');
   });
@@ -671,6 +706,14 @@ describe('JobService', () => {
       }),
       select: expect.objectContaining({ id: true }),
     });
+    expect(mockPrisma.jobMetric.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        jobId: 37,
+        outcome: 'FAILED',
+        errorCode: 'JOB_HANDLER_FAILED',
+      }),
+      select: expect.any(Object),
+    });
   });
 
   it('persists progress, successful finalization, and heartbeat lifecycle updates', async () => {
@@ -706,6 +749,15 @@ describe('JobService', () => {
     ).resolves.toEqual(succeeded);
 
     expect(mockPrisma.job.update).toHaveBeenCalledTimes(3);
+    expect(mockPrisma.jobMetric.create).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.jobMetric.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        jobId: 12,
+        outcome: 'SUCCEEDED',
+        errorCode: undefined,
+      }),
+      select: expect.any(Object),
+    });
   });
 
   it('keeps lifecycle transitions successful when notification publishing fails', async () => {
@@ -773,6 +825,15 @@ describe('JobService', () => {
     await expect(JobService.markCancelled(13)).resolves.toEqual(cancelled);
 
     expect(mockPrisma.job.update).toHaveBeenCalledTimes(2);
+    expect(mockPrisma.jobMetric.create).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.jobMetric.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        jobId: 13,
+        outcome: 'CANCELLED',
+        errorCode: undefined,
+      }),
+      select: expect.any(Object),
+    });
   });
 
   it('rejects invalid repeated state changes that would move backward', async () => {

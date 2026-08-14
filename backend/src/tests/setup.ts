@@ -26,6 +26,29 @@ type generationUsageResult = {
   errorCode: string | null;
   createdAt: Date;
 };
+type jobMetricResult = {
+  id: number;
+  jobId: number;
+  workspaceId: number;
+  jobType: string;
+  outcome: string;
+  attempts: number;
+  queueWaitMs: number | null;
+  executionDurationMs: number | null;
+  errorCode: string | null;
+  createdAt: Date;
+};
+type providerHealthSampleResult = {
+  id: number;
+  providerId: number;
+  providerType: string;
+  operation: string;
+  status: string;
+  latencyMs: number | null;
+  modelCount: number | null;
+  errorCode: string | null;
+  createdAt: Date;
+};
 
 const mockPrisma = {
   $queryRaw: jest.fn<() => Promise<unknown>>(),
@@ -87,6 +110,16 @@ const mockPrisma = {
   generationUsage: {
     create: jest.fn<(args: unknown) => Promise<generationUsageResult>>(),
     findMany: jest.fn<() => Promise<generationUsageResult[]>>(),
+    count: jest.fn<() => Promise<number>>(),
+  },
+  jobMetric: {
+    create: jest.fn<(args: unknown) => Promise<jobMetricResult>>(),
+    findMany: jest.fn<() => Promise<jobMetricResult[]>>(),
+    count: jest.fn<() => Promise<number>>(),
+  },
+  providerHealthSample: {
+    create: jest.fn<(args: unknown) => Promise<providerHealthSampleResult>>(),
+    findMany: jest.fn<() => Promise<providerHealthSampleResult[]>>(),
     count: jest.fn<() => Promise<number>>(),
   },
 };
@@ -177,6 +210,20 @@ jest.mock('@prisma/client', () => ({
     ESTIMATED: 'ESTIMATED',
     UNKNOWN: 'UNKNOWN',
   },
+  JobMetricOutcome: {
+    SUCCEEDED: 'SUCCEEDED',
+    FAILED: 'FAILED',
+    CANCELLED: 'CANCELLED',
+  },
+  ProviderHealthSampleOperation: {
+    MODEL_REGISTRY: 'MODEL_REGISTRY',
+    PROVIDER_TEST: 'PROVIDER_TEST',
+  },
+  ProviderHealthSampleStatus: {
+    SUCCESS: 'SUCCESS',
+    ERROR: 'ERROR',
+    SKIPPED: 'SKIPPED',
+  },
   Prisma: {
     PrismaClientKnownRequestError: MockPrismaClientKnownRequestError,
   },
@@ -245,6 +292,12 @@ beforeEach(() => {
     mockPrisma.generationUsage.create.mockClear();
     mockPrisma.generationUsage.findMany.mockClear();
     mockPrisma.generationUsage.count.mockClear();
+    mockPrisma.jobMetric.create.mockClear();
+    mockPrisma.jobMetric.findMany.mockClear();
+    mockPrisma.jobMetric.count.mockClear();
+    mockPrisma.providerHealthSample.create.mockClear();
+    mockPrisma.providerHealthSample.findMany.mockClear();
+    mockPrisma.providerHealthSample.count.mockClear();
 });
 
 export { mockPrisma };
